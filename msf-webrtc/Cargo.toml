@@ -21,6 +21,7 @@ sdp = ["msf-sdp/ice"]
 path = "../msf-ice"
 
 [dependencies.msf-rtp]
+version = "0.1"
 path = "../msf-rtp"
 
 [dependencies.msf-sdp]

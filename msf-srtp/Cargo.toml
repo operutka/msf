@@ -19,6 +19,7 @@ libc = "0.2"
 openssl = "0.10"
 
 [dependencies.msf-rtp]
+version = "0.1"
 path = "../msf-rtp"
 
 [dependencies.tokio]

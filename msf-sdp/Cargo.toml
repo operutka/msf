@@ -1,0 +1,24 @@
+[package]
+name = "msf-sdp"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-sdp/"
+repository = "https://github.com/operutka/msf"
+description = """
+Session Description Protocol (SDP) for Rust.
+"""
+keywords = ["protocol", "parser", "audio", "video", "media"]
+
+[features]
+default = []
+ice = ["msf-ice"]
+
+[dependencies]
+str-reader = "0.1"
+
+[dependencies.msf-ice]
+path = "../msf-ice"
+optional = true

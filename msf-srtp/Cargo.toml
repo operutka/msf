@@ -1,0 +1,25 @@
+[package]
+name = "msf-srtp"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-srtp/"
+repository = "https://github.com/operutka/msf"
+description = """
+Secure Real-time Transport Protocol (SRTP) for Rust.
+"""
+keywords = ["protocol", "network", "audio", "video", "media"]
+
+[dependencies]
+bytes = "1"
+futures = "0.3"
+libc = "0.2"
+openssl = "0.10"
+
+[dependencies.msf-rtp]
+path = "../msf-rtp"
+
+[dependencies.tokio]
+version = "1"

@@ -1,0 +1,31 @@
+[package]
+name = "msf-webrtc"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-webrtc/"
+repository = "https://github.com/operutka/msf"
+description = """
+WebRTC for Rust.
+"""
+keywords = ["protocol", "network", "audio", "video", "media"]
+
+[features]
+logging = ["msf-ice/log"]
+logging-slog = ["msf-ice/slog"]
+sdp = ["msf-sdp/ice"]
+
+[dependencies.msf-ice]
+path = "../msf-ice"
+
+[dependencies.msf-rtp]
+path = "../msf-rtp"
+
+[dependencies.msf-sdp]
+path = "../msf-sdp"
+optional = true
+
+[dependencies.msf-srtp]
+path = "../msf-srtp"

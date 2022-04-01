@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "msf-ice",
+    "msf-rtp",
+    "msf-sdp",
+    "msf-srtp",
+    "msf-stun",
+    "msf-webrtc",
+]

@@ -1,0 +1,23 @@
+[package]
+name = "msf-stun"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-stun/"
+repository = "https://github.com/operutka/msf"
+description = """
+Session Traversal Utilities for NAT (STUN) for Rust.
+"""
+keywords = ["protocol", "network"]
+
+[features]
+default = []
+ice = []
+
+[dependencies]
+bytes = "1"
+crc = "2"
+hmac = "0.12"
+sha-1 = "0.10"

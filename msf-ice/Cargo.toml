@@ -22,8 +22,9 @@ version = "0.4"
 optional = true
 
 [dependencies.msf-stun]
-path = "../msf-stun"
+version = "0.1"
 features = ["ice"]
+path = "../msf-stun"
 
 [dependencies.slog]
 version = "2"

@@ -18,6 +18,7 @@ logging-slog = ["msf-ice/slog"]
 sdp = ["msf-sdp/ice"]
 
 [dependencies.msf-ice]
+version = "0.1"
 path = "../msf-ice"
 
 [dependencies.msf-rtp]

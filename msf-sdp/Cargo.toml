@@ -20,5 +20,6 @@ ice = ["msf-ice"]
 str-reader = "0.1"
 
 [dependencies.msf-ice]
-path = "../msf-ice"
+version = "0.1"
 optional = true
+path = "../msf-ice"

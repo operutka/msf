@@ -26,8 +26,9 @@ version = "0.1"
 path = "../msf-rtp"
 
 [dependencies.msf-sdp]
-path = "../msf-sdp"
+version = "0.1"
 optional = true
+path = "../msf-sdp"
 
 [dependencies.msf-srtp]
 version = "0.1"

@@ -19,6 +19,92 @@ use crate::{
     socket::{ICESockets, Packet},
 };
 
+/// Channel builder.
+pub struct ChannelBuilder {
+    channel: usize,
+    components: Vec<ComponentHandle>,
+}
+
+impl ChannelBuilder {
+    /// Create a new channel builder.
+    fn new(channel: usize) -> Self {
+        Self {
+            channel,
+            components: Vec::new(),
+        }
+    }
+
+    /// Check if there are any components.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+
+    /// Add a new component.
+    #[inline]
+    pub fn component(&mut self) -> Component {
+        assert!(self.components.len() < 256);
+
+        let component_id = self.components.len() as u8;
+
+        let (component, handle) = Component::new(self.channel, component_id);
+
+        self.components.push(handle);
+
+        component
+    }
+
+    /// Build the channel.
+    #[cfg(not(feature = "slog"))]
+    pub(crate) fn build(self, session: Session, local_addresses: &[IpAddr]) -> Channel {
+        let components = self.components.len();
+
+        debug_assert!(components > 0);
+
+        let checklist = Checklist::new(session.clone(), self.channel, components);
+
+        let mut component_transports = Vec::with_capacity(components);
+
+        component_transports.resize_with(components, || ComponentTransport::new(local_addresses));
+
+        Channel {
+            session,
+            channel_index: self.channel,
+            checklist,
+            component_transports,
+            component_handles: self.components,
+        }
+    }
+
+    /// Build the channel.
+    #[cfg(feature = "slog")]
+    pub(crate) fn build(
+        self,
+        logger: Logger,
+        session: Session,
+        local_addresses: &[IpAddr],
+    ) -> Channel {
+        let components = self.components.len();
+
+        debug_assert!(components > 0);
+
+        let checklist = Checklist::new(session.clone(), self.channel, components);
+
+        let mut component_transports = Vec::with_capacity(components);
+
+        component_transports.resize_with(components, || {
+            ComponentTransport::new(logger.clone(), local_addresses)
+        });
+
+        Channel {
+            session,
+            channel_index: self.channel,
+            checklist,
+            component_transports,
+            component_handles: self.components,
+        }
+    }
+}
+
 /// Single data/media channel.
 pub struct Channel {
     session: Session,
@@ -29,57 +115,9 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Create a new channel with a given number of components.
-    #[cfg(not(feature = "slog"))]
-    pub fn new(
-        session: Session,
-        channel_index: usize,
-        components: usize,
-        local_addresses: &[IpAddr],
-    ) -> Self {
-        debug_assert!(components > 0 && components <= 256);
-
-        let checklist = Checklist::new(session.clone(), channel_index, components);
-
-        let mut component_transports = Vec::with_capacity(components);
-
-        component_transports.resize_with(components, || ComponentTransport::new(local_addresses));
-
-        Self {
-            session,
-            channel_index,
-            checklist,
-            component_transports,
-            component_handles: Vec::with_capacity(components),
-        }
-    }
-
-    /// Create a new channel with a given number of components.
-    #[cfg(feature = "slog")]
-    pub fn new(
-        logger: Logger,
-        session: Session,
-        channel_index: usize,
-        components: usize,
-        local_addresses: &[IpAddr],
-    ) -> Self {
-        debug_assert!(components > 0 && components <= 256);
-
-        let checklist = Checklist::new(session.clone(), channel_index, components);
-
-        let mut component_transports = Vec::with_capacity(components);
-
-        component_transports.resize_with(components, || {
-            ComponentTransport::new(logger.clone(), local_addresses)
-        });
-
-        Self {
-            session,
-            channel_index,
-            checklist,
-            component_transports,
-            component_handles: Vec::with_capacity(components),
-        }
+    /// Get a channel builder.
+    pub fn builder(channel: usize) -> ChannelBuilder {
+        ChannelBuilder::new(channel)
     }
 
     /// Get the next local candidate.
@@ -107,20 +145,6 @@ impl Channel {
 
         if pending > 0 {
             Poll::Pending
-        } else {
-            Poll::Ready(None)
-        }
-    }
-
-    /// Get the next component.
-    pub fn poll_next_component(&mut self, _: &mut Context<'_>) -> Poll<Option<Component>> {
-        if self.component_handles.len() < self.component_transports.len() {
-            let (component, handle) =
-                Component::new(self.channel_index, self.component_handles.len() as _);
-
-            self.component_handles.push(handle);
-
-            Poll::Ready(Some(component))
         } else {
             Poll::Ready(None)
         }

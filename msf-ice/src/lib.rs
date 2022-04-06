@@ -33,7 +33,7 @@ use self::{channel::Channel, session::Session};
 
 pub use self::{
     candidate::{CandidateKind, LocalCandidate, RemoteCandidate},
-    channel::Component,
+    channel::{ChannelBuilder, Component},
     session::Credentials,
     socket::Packet,
 };
@@ -63,7 +63,7 @@ pub struct AgentBuilder {
     logger: Logger,
     agent_role: AgentRole,
     local_addresses: Vec<IpAddr>,
-    channels: Vec<usize>,
+    channels: Vec<ChannelBuilder>,
     check_interval: Duration,
 }
 
@@ -95,13 +95,22 @@ impl AgentBuilder {
         self
     }
 
-    /// Add a new channel with a given number of components.
+    /// Add a new channel.
+    ///
+    /// The method returns a channel builder where components can be created.
     #[inline]
-    pub fn channel(&mut self, components: usize) -> &mut Self {
-        assert!(components > 0 && components <= 256);
+    pub fn channel(&mut self) -> &mut ChannelBuilder {
+        let create = self
+            .channels
+            .last()
+            .map(|last| !last.is_empty())
+            .unwrap_or(true);
 
-        self.channels.push(components);
-        self
+        if create {
+            self.channels.push(Channel::builder(self.channels.len()));
+        }
+
+        self.channels.last_mut().unwrap()
     }
 
     /// Build the agent.
@@ -119,55 +128,44 @@ impl AgentBuilder {
         #[cfg(not(feature = "slog"))]
         let channels = self
             .channels
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, components)| {
-                Channel::new(session.clone(), index, components, &self.local_addresses)
-            })
+            .into_iter()
+            .filter(|channel| !channel.is_empty())
+            .map(|channel| channel.build(session.clone(), &self.local_addresses))
             .collect();
 
         #[cfg(feature = "slog")]
         let channels = self
             .channels
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, components)| {
-                Channel::new(
-                    self.logger.clone(),
-                    session.clone(),
-                    index,
-                    components,
-                    &self.local_addresses,
-                )
+            .into_iter()
+            .filter(|channel| !channel.is_empty())
+            .map(|channel| {
+                channel.build(self.logger.clone(), session.clone(), &self.local_addresses)
             })
             .collect();
 
         let (local_candidate_tx, local_candidate_rx) = mpsc::unbounded();
         let (remote_candidate_tx, remote_candidate_rx) = mpsc::unbounded();
-        let (component_tx, component_rx) = mpsc::unbounded();
 
         let task = AgentTask {
             session: session.clone(),
             channels,
             remote_candidate_rx,
             local_candidate_tx: Some(local_candidate_tx),
-            component_tx: Some(component_tx),
             last_check: Instant::now(),
             next_check: Box::pin(tokio::time::sleep(self.check_interval)),
             check_interval: self.check_interval,
             check_tokens: 1,
         };
 
+        let channel_count = task.channels.len();
+
         tokio::spawn(task);
 
         Agent {
             session,
-            channels: self.channels.len(),
+            channels: channel_count,
             local_candidate_rx,
             remote_candidate_tx,
-            component_rx,
         }
     }
 }
@@ -188,7 +186,6 @@ pub struct Agent {
     channels: usize,
     local_candidate_rx: mpsc::UnboundedReceiver<LocalCandidate>,
     remote_candidate_tx: mpsc::UnboundedSender<NewRemoteCandidate>,
-    component_rx: mpsc::UnboundedReceiver<Component>,
 }
 
 impl Agent {
@@ -215,18 +212,6 @@ impl Agent {
     #[inline]
     pub async fn next_local_candidate(&mut self) -> Option<LocalCandidate> {
         futures::future::poll_fn(|cx| self.poll_next_local_candidate(cx)).await
-    }
-
-    /// Get the next component.
-    #[inline]
-    pub fn poll_next_component(&mut self, cx: &mut Context<'_>) -> Poll<Option<Component>> {
-        self.component_rx.poll_next_unpin(cx)
-    }
-
-    /// Get the next component.
-    #[inline]
-    pub async fn next_component(&mut self) -> Option<Component> {
-        futures::future::poll_fn(|cx| self.poll_next_component(cx)).await
     }
 
     /// Get the number of channels.
@@ -286,7 +271,6 @@ struct AgentTask {
     channels: Vec<Channel>,
     remote_candidate_rx: mpsc::UnboundedReceiver<NewRemoteCandidate>,
     local_candidate_tx: Option<mpsc::UnboundedSender<LocalCandidate>>,
-    component_tx: Option<mpsc::UnboundedSender<Component>>,
     last_check: Instant,
     next_check: Pin<Box<Sleep>>,
     check_interval: Duration,
@@ -319,10 +303,10 @@ impl AgentTask {
 
     /// Process new local candidates.
     fn process_local_candidates(&mut self, cx: &mut Context<'_>) {
-        let mut resolved = 0;
+        if let Some(candidate_tx) = self.local_candidate_tx.as_mut() {
+            let mut resolved = 0;
 
-        for channel in &mut self.channels {
-            if let Some(candidate_tx) = self.local_candidate_tx.as_mut() {
+            for channel in &mut self.channels {
                 while let Poll::Ready(r) = channel.poll_next_local_candidate(cx) {
                     if let Some(candidate) = r {
                         candidate_tx.unbounded_send(candidate).unwrap_or_default();
@@ -335,35 +319,10 @@ impl AgentTask {
                     }
                 }
             }
-        }
 
-        if resolved == self.channels.len() {
-            self.local_candidate_tx = None;
-        }
-    }
-
-    /// Process new components.
-    fn process_components(&mut self, cx: &mut Context<'_>) {
-        let mut resolved = 0;
-
-        for channel in &mut self.channels {
-            if let Some(component_tx) = self.component_tx.as_mut() {
-                while let Poll::Ready(r) = channel.poll_next_component(cx) {
-                    if let Some(component) = r {
-                        component_tx.unbounded_send(component).unwrap_or_default();
-                    } else {
-                        // mark the channel as resolved
-                        resolved += 1;
-
-                        // ... and stop polling it
-                        break;
-                    }
-                }
+            if resolved == self.channels.len() {
+                self.local_candidate_tx = None;
             }
-        }
-
-        if resolved == self.channels.len() {
-            self.component_tx = None;
         }
     }
 
@@ -431,7 +390,6 @@ impl Future for AgentTask {
 
         self.schedule_checks(cx);
         self.process_local_candidates(cx);
-        self.process_components(cx);
         self.drive_channels(cx);
 
         Poll::Pending

@@ -1,6 +1,7 @@
 //! RTCP types.
 
 mod bye;
+mod handler;
 mod report;
 
 use std::ops::Deref;
@@ -11,6 +12,7 @@ use crate::InvalidInput;
 
 pub use self::{
     bye::ByePacket,
+    handler::{MuxedRtcpHandler, RtcpHandler},
     report::{ReceiverReport, ReportBlock, SenderReport},
 };
 

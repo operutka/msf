@@ -3,12 +3,19 @@
 
 mod rtp;
 
+pub mod depacketizer;
+pub mod packetizer;
 pub mod rtcp;
 pub mod utils;
+
+#[cfg(feature = "pcm")]
+pub mod pcm;
 
 use std::fmt::{self, Display, Formatter};
 
 pub use self::{
+    depacketizer::{Depacketizer, MediaStream},
+    packetizer::{MediaSink, Packetizer},
     rtcp::{CompoundRtcpPacket, RtcpHeader, RtcpPacket, RtcpPacketType},
     rtp::{RtpHeader, RtpHeaderExtension, RtpPacket},
 };

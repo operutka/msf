@@ -8,7 +8,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{ready, Sink, SinkExt, Stream, StreamExt};
-use msf_rtp::{PacketMux, RtcpPacketType};
+use msf_rtp::{CompoundRtcpPacket, PacketMux, RtcpPacketType, RtpPacket};
 use openssl::ssl::{HandshakeError, Ssl, SslStream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -29,11 +29,71 @@ impl Connector {
     }
 
     /// Perform a "connect" DTLS handshake.
-    pub async fn connect<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
+    pub async fn connect_srtp<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
     {
-        let mut ssl_stream = InnerSslStream::new(&mut stream);
+        let session = self.connect(&mut stream).await?;
+
+        Ok(SrtpStream::new(session, stream))
+    }
+
+    /// Perform a "connect" DTLS handshake.
+    pub async fn connect_srtcp<S>(self, mut stream: S) -> Result<SrtcpStream<S>, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let session = self.connect(&mut stream).await?;
+
+        Ok(SrtcpStream::new(session, stream))
+    }
+
+    /// Perform a "connect" DTLS handshake.
+    pub async fn connect_muxed<S>(self, mut stream: S) -> Result<MuxedSrtpStream<S>, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let session = self.connect(&mut stream).await?;
+
+        Ok(MuxedSrtpStream::new(session, stream))
+    }
+
+    /// Perform an "accept" DTLS handshake.
+    pub async fn accept_srtp<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let session = self.accept(&mut stream).await?;
+
+        Ok(SrtpStream::new(session, stream))
+    }
+
+    /// Perform an "accept" DTLS handshake.
+    pub async fn accept_srtcp<S>(self, mut stream: S) -> Result<SrtcpStream<S>, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let session = self.accept(&mut stream).await?;
+
+        Ok(SrtcpStream::new(session, stream))
+    }
+
+    /// Perform an "accept" DTLS handshake.
+    pub async fn accept_muxed<S>(self, mut stream: S) -> Result<MuxedSrtpStream<S>, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let session = self.accept(&mut stream).await?;
+
+        Ok(MuxedSrtpStream::new(session, stream))
+    }
+
+    /// Perform a "connect" DTLS handshake.
+    async fn connect<S>(self, stream: &mut S) -> Result<SrtpSession, Error>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let mut ssl_stream = InnerSslStream::new(stream);
 
         let connect = futures::future::lazy(move |cx| {
             ssl_stream.set_async_context(Some(cx));
@@ -46,17 +106,17 @@ impl Connector {
 
         let handshake = Handshake::from(connect.await);
 
-        let session = SrtpSession::client(handshake.await?.ssl())?;
+        let ssl_stream = handshake.await?;
 
-        Ok(SrtpStream::new(session, stream))
+        SrtpSession::client(ssl_stream.ssl())
     }
 
     /// Perform an "accept" DTLS handshake.
-    pub async fn accept<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
+    async fn accept<S>(self, stream: &mut S) -> Result<SrtpSession, Error>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
     {
-        let mut ssl_stream = InnerSslStream::new(&mut stream);
+        let mut ssl_stream = InnerSslStream::new(stream);
 
         let accept = futures::future::lazy(move |cx| {
             ssl_stream.set_async_context(Some(cx));
@@ -69,20 +129,142 @@ impl Connector {
 
         let handshake = Handshake::from(accept.await);
 
-        let session = SrtpSession::server(handshake.await?.ssl())?;
+        let ssl_stream = handshake.await?;
 
-        Ok(SrtpStream::new(session, stream))
+        SrtpSession::server(ssl_stream.ssl())
     }
 }
 
 /// SRTP stream.
 pub struct SrtpStream<S> {
-    session: SrtpSession,
-    inner: S,
+    inner: MuxedSrtpStream<S>,
 }
 
 impl<S> SrtpStream<S> {
     /// Create a new SRTP stream.
+    fn new(session: SrtpSession, stream: S) -> Self {
+        Self {
+            inner: MuxedSrtpStream::new(session, stream),
+        }
+    }
+}
+
+impl<S> Stream for SrtpStream<S>
+where
+    S: Stream<Item = io::Result<Bytes>> + Unpin,
+{
+    type Item = Result<RtpPacket, Error>;
+
+    #[inline]
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        while let Poll::Ready(ready) = self.inner.poll_next_unpin(cx) {
+            match ready.transpose()? {
+                Some(PacketMux::Rtp(packet)) => return Poll::Ready(Some(Ok(packet))),
+                Some(PacketMux::Rtcp(_)) => (),
+                None => return Poll::Ready(None),
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<S> Sink<RtpPacket> for SrtpStream<S>
+where
+    S: Sink<Bytes, Error = io::Error> + Unpin,
+{
+    type Error = Error;
+
+    #[inline]
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready_unpin(cx)
+    }
+
+    #[inline]
+    fn start_send(mut self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
+        self.inner.start_send_unpin(packet.into())
+    }
+
+    #[inline]
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_flush_unpin(cx)
+    }
+
+    #[inline]
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_close_unpin(cx)
+    }
+}
+
+/// SRTCP stream.
+pub struct SrtcpStream<S> {
+    inner: MuxedSrtpStream<S>,
+}
+
+impl<S> SrtcpStream<S> {
+    /// Create a new SRTCP stream.
+    fn new(session: SrtpSession, stream: S) -> Self {
+        Self {
+            inner: MuxedSrtpStream::new(session, stream),
+        }
+    }
+}
+
+impl<S> Stream for SrtcpStream<S>
+where
+    S: Stream<Item = io::Result<Bytes>> + Unpin,
+{
+    type Item = Result<CompoundRtcpPacket, Error>;
+
+    #[inline]
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        while let Poll::Ready(ready) = self.inner.poll_next_unpin(cx) {
+            match ready.transpose()? {
+                Some(PacketMux::Rtp(_)) => (),
+                Some(PacketMux::Rtcp(packet)) => return Poll::Ready(Some(Ok(packet))),
+                None => return Poll::Ready(None),
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<S> Sink<CompoundRtcpPacket> for SrtcpStream<S>
+where
+    S: Sink<Bytes, Error = io::Error> + Unpin,
+{
+    type Error = Error;
+
+    #[inline]
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready_unpin(cx)
+    }
+
+    #[inline]
+    fn start_send(mut self: Pin<&mut Self>, packet: CompoundRtcpPacket) -> Result<(), Self::Error> {
+        self.inner.start_send_unpin(packet.into())
+    }
+
+    #[inline]
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_flush_unpin(cx)
+    }
+
+    #[inline]
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_close_unpin(cx)
+    }
+}
+
+/// Muxed SRTP-SRTCP stream.
+pub struct MuxedSrtpStream<S> {
+    session: SrtpSession,
+    inner: S,
+}
+
+impl<S> MuxedSrtpStream<S> {
+    /// Create a new muxed SRTP-SRTCP stream.
     fn new(session: SrtpSession, stream: S) -> Self {
         Self {
             session,
@@ -91,7 +273,7 @@ impl<S> SrtpStream<S> {
     }
 }
 
-impl<S> Stream for SrtpStream<S>
+impl<S> Stream for MuxedSrtpStream<S>
 where
     S: Stream<Item = io::Result<Bytes>> + Unpin,
 {
@@ -116,7 +298,7 @@ where
     }
 }
 
-impl<S> Sink<PacketMux> for SrtpStream<S>
+impl<S> Sink<PacketMux> for MuxedSrtpStream<S>
 where
     S: Sink<Bytes, Error = io::Error> + Unpin,
 {

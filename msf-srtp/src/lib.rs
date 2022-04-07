@@ -30,9 +30,9 @@
 //! let context = SrtpContext::self_signed(&key)?;
 //!
 //! let stream = if connect {
-//!     context.connect(stream, cert_fingerprint).await?
+//!     context.connect_muxed(stream, cert_fingerprint).await?
 //! } else {
-//!     context.accept(stream, cert_fingerprint).await?
+//!     context.accept_muxed(stream, cert_fingerprint).await?
 //! };
 //! ```
 
@@ -62,7 +62,7 @@ use openssl::{
 use self::connector::Connector;
 
 pub use self::{
-    connector::SrtpStream,
+    connector::{MuxedSrtpStream, SrtcpStream, SrtpStream},
     fingerprint::{CertificateFingerprint, HashFunction, InvalidFingerprint, UnknownHashFunction},
     profile::SrtpProfileId,
 };
@@ -352,7 +352,7 @@ impl SrtpContext {
 
     /// Connect to a given SRTP "server" and check that the peer certificate
     /// matches a given fingerprint.
-    pub fn connect<S>(
+    pub fn connect_srtp<S>(
         &self,
         stream: S,
         peer_cert_fingerprint: &str,
@@ -360,14 +360,44 @@ impl SrtpContext {
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
     {
-        let connector = self.new_srtp_connector(peer_cert_fingerprint);
+        let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.connect(stream).await }
+        async move { connector?.connect_srtp(stream).await }
+    }
+
+    /// Connect to a given SRTCP "server" and check that the peer certificate
+    /// matches a given fingerprint.
+    pub fn connect_srtcp<S>(
+        &self,
+        stream: S,
+        peer_cert_fingerprint: &str,
+    ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let connector = self.new_connector(peer_cert_fingerprint);
+
+        async move { connector?.connect_srtcp(stream).await }
+    }
+
+    /// Connect to a given muxed SRTP-SRTCP "server" and check that the peer
+    /// certificate matches a given fingerprint.
+    pub fn connect_muxed<S>(
+        &self,
+        stream: S,
+        peer_cert_fingerprint: &str,
+    ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let connector = self.new_connector(peer_cert_fingerprint);
+
+        async move { connector?.connect_muxed(stream).await }
     }
 
     /// Accept connection from a given SRTP "client" and check that the peer
     /// certificate matches a given fingerprint.
-    pub fn accept<S>(
+    pub fn accept_srtp<S>(
         &self,
         stream: S,
         peer_cert_fingerprint: &str,
@@ -375,13 +405,43 @@ impl SrtpContext {
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
     {
-        let connector = self.new_srtp_connector(peer_cert_fingerprint);
+        let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.accept(stream).await }
+        async move { connector?.accept_srtp(stream).await }
     }
 
-    /// Create a new SRTP connector.
-    fn new_srtp_connector(&self, peer_cert_fingerprint: &str) -> Result<Connector, InternalError> {
+    /// Accept connection from a given SRTCP "client" and check that the peer
+    /// certificate matches a given fingerprint.
+    pub fn accept_srtcp<S>(
+        &self,
+        stream: S,
+        peer_cert_fingerprint: &str,
+    ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let connector = self.new_connector(peer_cert_fingerprint);
+
+        async move { connector?.accept_srtcp(stream).await }
+    }
+
+    /// Accept connection from a given muxed SRTP-SRTCP "client" and check that
+    /// the peer certificate matches a given fingerprint.
+    pub fn accept_muxed<S>(
+        &self,
+        stream: S,
+        peer_cert_fingerprint: &str,
+    ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
+    where
+        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+    {
+        let connector = self.new_connector(peer_cert_fingerprint);
+
+        async move { connector?.accept_muxed(stream).await }
+    }
+
+    /// Create a new connector.
+    fn new_connector(&self, peer_cert_fingerprint: &str) -> Result<Connector, InternalError> {
         let expected_fingerprint = CertificateFingerprint::from_str(peer_cert_fingerprint)?;
 
         let mut ssl = Ssl::new(&self.ssl_context)?;

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -6,17 +7,15 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{channel::mpsc, Sink, Stream, StreamExt};
+use futures::{channel::mpsc, ready, Sink, Stream, StreamExt};
 use msf_stun as stun;
-
-#[cfg(feature = "slog")]
-use slog::Logger;
 
 use crate::{
     candidate::{LocalCandidate, RemoteCandidate},
     checklist::Checklist,
+    log::Logger,
     session::Session,
-    socket::{ICESockets, Packet},
+    socket::{Binding as SocketBinding, ICESockets, LocalBinding, Packet, ReflexiveBinding},
 };
 
 /// Channel builder.
@@ -54,34 +53,12 @@ impl ChannelBuilder {
     }
 
     /// Build the channel.
-    #[cfg(not(feature = "slog"))]
-    pub(crate) fn build(self, session: Session, local_addresses: &[IpAddr]) -> Channel {
-        let components = self.components.len();
-
-        debug_assert!(components > 0);
-
-        let checklist = Checklist::new(session.clone(), self.channel, components);
-
-        let mut component_transports = Vec::with_capacity(components);
-
-        component_transports.resize_with(components, || ComponentTransport::new(local_addresses));
-
-        Channel {
-            session,
-            channel_index: self.channel,
-            checklist,
-            component_transports,
-            component_handles: self.components,
-        }
-    }
-
-    /// Build the channel.
-    #[cfg(feature = "slog")]
     pub(crate) fn build(
         self,
         logger: Logger,
         session: Session,
         local_addresses: &[IpAddr],
+        stun_servers: &[SocketAddr],
     ) -> Channel {
         let components = self.components.len();
 
@@ -92,7 +69,7 @@ impl ChannelBuilder {
         let mut component_transports = Vec::with_capacity(components);
 
         component_transports.resize_with(components, || {
-            ComponentTransport::new(logger.clone(), local_addresses)
+            ComponentTransport::new(logger.clone(), local_addresses, stun_servers)
         });
 
         Channel {
@@ -101,6 +78,7 @@ impl ChannelBuilder {
             checklist,
             component_transports,
             component_handles: self.components,
+            available_candidates: VecDeque::new(),
         }
     }
 }
@@ -112,6 +90,7 @@ pub struct Channel {
     checklist: Checklist,
     component_transports: Vec<ComponentTransport>,
     component_handles: Vec<ComponentHandle>,
+    available_candidates: VecDeque<LocalCandidate>,
 }
 
 impl Channel {
@@ -125,19 +104,29 @@ impl Channel {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<LocalCandidate>> {
+        loop {
+            if let Some(candidate) = self.available_candidates.pop_front() {
+                return Poll::Ready(Some(candidate));
+            } else if let Some((component, binding)) = ready!(self.poll_next_socket_binding(cx)) {
+                self.process_socket_binding(component, binding);
+            } else {
+                return Poll::Ready(None);
+            }
+        }
+    }
+
+    ///
+    fn poll_next_socket_binding(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<(u8, SocketBinding)>> {
         let mut pending = 0;
 
-        for (index, transport) in self.component_transports.iter_mut().enumerate() {
-            match transport.poll_next_local_addr(cx) {
-                Poll::Ready(Some(addr)) => {
-                    let candidate = LocalCandidate::host(self.channel_index, index as _, addr);
-                    let foundation = self.session.assign_foundation(&candidate, None);
-                    let candidate = candidate.with_foundation(foundation);
+        let transports = self.component_transports.iter_mut();
 
-                    self.checklist.add_local_candidate(candidate);
-
-                    return Poll::Ready(Some(candidate));
-                }
+        for (index, transport) in transports.enumerate() {
+            match transport.poll_next_binding(cx) {
+                Poll::Ready(Some(binding)) => return Poll::Ready(Some((index as _, binding))),
                 Poll::Ready(None) => (),
                 Poll::Pending => pending += 1,
             }
@@ -148,6 +137,54 @@ impl Channel {
         } else {
             Poll::Ready(None)
         }
+    }
+
+    ///
+    fn process_socket_binding(&mut self, component: u8, binding: SocketBinding) {
+        match binding {
+            SocketBinding::Local(binding) => self.process_local_binding(component, binding),
+            SocketBinding::Reflexive(binding) => self.process_reflexive_binding(component, binding),
+        }
+    }
+
+    ///
+    fn process_local_binding(&mut self, component: u8, binding: LocalBinding) {
+        let addr = binding.addr();
+
+        let candidate = LocalCandidate::host(self.channel_index, component, addr);
+
+        let foundation = self.session.assign_foundation(&candidate, None);
+
+        let candidate = candidate.with_foundation(foundation);
+
+        self.checklist.add_local_candidate(candidate);
+
+        let ip = addr.ip();
+
+        if !ip.is_unspecified() {
+            self.available_candidates.push_back(candidate);
+        }
+    }
+
+    ///
+    fn process_reflexive_binding(&mut self, component: u8, binding: ReflexiveBinding) {
+        let candidate = LocalCandidate::server_reflexive(
+            self.channel_index,
+            component,
+            binding.base(),
+            binding.addr(),
+        );
+
+        let source = binding.source();
+
+        let foundation = self
+            .session
+            .assign_foundation(&candidate, Some(source.ip()));
+
+        let candidate = candidate.with_foundation(foundation);
+
+        self.checklist.add_local_candidate(candidate);
+        self.available_candidates.push_back(candidate);
     }
 
     /// Add a given remote candidate.
@@ -405,28 +442,15 @@ impl ComponentHandle {
 
 /// Component transport.
 struct ComponentTransport {
-    #[cfg(feature = "slog")]
-    logger: Logger,
     sockets: ICESockets,
     binding: Option<ComponentBinding>,
 }
 
 impl ComponentTransport {
     /// Create a new component transport.
-    #[cfg(not(feature = "slog"))]
-    fn new(local_addresses: &[IpAddr]) -> Self {
+    fn new(logger: Logger, local_addresses: &[IpAddr], stun_servers: &[SocketAddr]) -> Self {
         Self {
-            sockets: ICESockets::new(local_addresses),
-            binding: None,
-        }
-    }
-
-    /// Create a new component transport.
-    #[cfg(feature = "slog")]
-    fn new(logger: Logger, local_addresses: &[IpAddr]) -> Self {
-        Self {
-            logger: logger.clone(),
-            sockets: ICESockets::new(logger, local_addresses),
+            sockets: ICESockets::new(logger, local_addresses, stun_servers),
             binding: None,
         }
     }
@@ -442,7 +466,7 @@ impl ComponentTransport {
     }
 
     /// Get the next local binding.
-    fn poll_next_local_addr(&mut self, cx: &mut Context<'_>) -> Poll<Option<SocketAddr>> {
+    fn poll_next_binding(&mut self, cx: &mut Context<'_>) -> Poll<Option<SocketBinding>> {
         self.sockets.poll_next_binding(cx)
     }
 
@@ -461,12 +485,8 @@ impl ComponentTransport {
     fn send(&mut self, data: Bytes) {
         if let Some(binding) = self.binding {
             self.send_using(binding.local, binding.remote, data);
-        } else {
-            #[cfg(feature = "log")]
-            warn!("unable to send given data packet: no binding");
-
-            #[cfg(feature = "slog")]
-            warn!(self.logger, "unable to send given data packet"; "cause" => "no binding");
+        } else if cfg!(debug_assertions) {
+            panic!("unable to send given data packet, no binding");
         }
     }
 }

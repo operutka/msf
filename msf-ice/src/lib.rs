@@ -1,10 +1,5 @@
-#[cfg(feature = "log")]
 #[macro_use]
-extern crate log;
-
-#[cfg(feature = "slog")]
-#[macro_use]
-extern crate slog;
+mod log;
 
 mod candidate;
 mod channel;
@@ -16,7 +11,7 @@ mod utils;
 
 use std::{
     future::Future,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, SocketAddr},
     ops::Deref,
     pin::Pin,
     task::{Context, Poll},
@@ -27,7 +22,10 @@ use futures::{channel::mpsc, ready, FutureExt, StreamExt};
 use tokio::time::Sleep;
 
 #[cfg(feature = "slog")]
-use slog::{Discard, Logger};
+use slog::{o, Discard, Logger};
+
+#[cfg(not(feature = "slog"))]
+use self::log::Logger;
 
 use self::{channel::Channel, session::Session};
 
@@ -63,6 +61,7 @@ pub struct AgentBuilder {
     logger: Logger,
     agent_role: AgentRole,
     local_addresses: Vec<IpAddr>,
+    stun_servers: Vec<SocketAddr>,
     channels: Vec<ChannelBuilder>,
     check_interval: Duration,
 }
@@ -75,6 +74,7 @@ impl AgentBuilder {
             logger: Logger::root(Discard, o!()),
             agent_role,
             local_addresses: Vec::new(),
+            stun_servers: Vec::new(),
             channels: Vec::new(),
             check_interval: Duration::from_millis(50),
         }
@@ -92,6 +92,13 @@ impl AgentBuilder {
     #[inline]
     pub fn local_address(&mut self, addr: IpAddr) -> &mut Self {
         self.local_addresses.push(addr);
+        self
+    }
+
+    /// Use a given STUN server.
+    #[inline]
+    pub fn stun_server(&mut self, addr: SocketAddr) -> &mut Self {
+        self.stun_servers.push(addr);
         self
     }
 
@@ -118,28 +125,28 @@ impl AgentBuilder {
         self.local_addresses.sort_unstable();
         self.local_addresses.dedup();
 
-        if self.local_addresses.is_empty() {
-            self.local_addresses
-                .push(IpAddr::from(Ipv4Addr::UNSPECIFIED));
-        }
+        self.stun_servers.sort_unstable();
+        self.stun_servers.dedup();
 
         let session = Session::new(self.agent_role, self.channels.len());
 
-        #[cfg(not(feature = "slog"))]
-        let channels = self
-            .channels
-            .into_iter()
-            .filter(|channel| !channel.is_empty())
-            .map(|channel| channel.build(session.clone(), &self.local_addresses))
-            .collect();
-
         #[cfg(feature = "slog")]
+        let logger = self.logger;
+
+        #[cfg(not(feature = "slog"))]
+        let logger = Logger;
+
         let channels = self
             .channels
             .into_iter()
             .filter(|channel| !channel.is_empty())
             .map(|channel| {
-                channel.build(self.logger.clone(), session.clone(), &self.local_addresses)
+                channel.build(
+                    logger.clone(),
+                    session.clone(),
+                    &self.local_addresses,
+                    &self.stun_servers,
+                )
             })
             .collect();
 

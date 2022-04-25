@@ -38,7 +38,10 @@ impl H264Parameters {
     /// * `packetization_mode` - packetization mode as defined in RFC 6184
     /// * `parameter_sets` - session and picture parameter sets encoded as a
     ///   single H.264 byte stream
-    pub fn new(packetization_mode: u8, parameter_sets: Option<Bytes>) -> Result<Self, InvalidParameters> {
+    pub fn new(
+        packetization_mode: u8,
+        parameter_sets: Option<Bytes>,
+    ) -> Result<Self, InvalidParameters> {
         let mut profile_level_id = None;
 
         if let Some(mut parameter_sets) = parameter_sets.clone() {
@@ -81,11 +84,19 @@ impl Display for H264Parameters {
             f.write_str(";sprop-parameter-sets=")?;
 
             if let Ok(Some(nal_unit)) = extract_nal_unit(&mut parameter_sets) {
-                write!(f, "{}", Base64Display::with_config(&nal_unit, base64::STANDARD))?;
+                write!(
+                    f,
+                    "{}",
+                    Base64Display::with_config(&nal_unit, base64::STANDARD)
+                )?;
             }
 
             while let Ok(Some(nal_unit)) = extract_nal_unit(&mut parameter_sets) {
-                write!(f, ",{}", Base64Display::with_config(&nal_unit, base64::STANDARD))?;
+                write!(
+                    f,
+                    ",{}",
+                    Base64Display::with_config(&nal_unit, base64::STANDARD)
+                )?;
             }
         }
 
@@ -114,6 +125,10 @@ impl ProfileLevelId {
 
 impl Display for ProfileLevelId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{:02X}{:02X}{:02X}", self.profile_idc, self.constraints, self.level_idc)
+        write!(
+            f,
+            "{:02X}{:02X}{:02X}",
+            self.profile_idc, self.constraints, self.level_idc
+        )
     }
 }

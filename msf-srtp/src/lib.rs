@@ -440,7 +440,10 @@ impl SrtpContext {
     }
 
     /// Create a new connector.
-    fn new_connector(&self, peer_cert_fingerprint: CertificateFingerprint) -> Result<Connector, InternalError> {
+    fn new_connector(
+        &self,
+        peer_cert_fingerprint: CertificateFingerprint,
+    ) -> Result<Connector, InternalError> {
         let mut ssl = Ssl::new(&self.ssl_context)?;
 
         ssl.set_tlsext_use_srtp(&self.srtp_profiles)?;

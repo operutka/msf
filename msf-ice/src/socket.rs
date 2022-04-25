@@ -531,7 +531,7 @@ impl StunContext {
                 }
             })
             .buffered((((1 << (RC - 1)) + RM) * RTO / 1_000) as usize)
-            .filter_map(|addr| futures::future::ready(addr));
+            .filter_map(futures::future::ready);
 
         futures::pin_mut!(reflexive_addrs);
 

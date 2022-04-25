@@ -173,11 +173,7 @@ impl ReorderingBuffer {
             *start += 1;
         }
 
-        if let Some(front) = self.window.pop_front() {
-            front
-        } else {
-            None
-        }
+        self.window.pop_front()?
     }
 
     /// Check if the underlying buffer is empty.

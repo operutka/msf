@@ -159,12 +159,12 @@ impl Packetizer for H264Packetizer {
 
             let nal_unit = if let Some(nal_unit) = current_nal_unit {
                 if nal_unit.is_empty() {
-                    continue
+                    continue;
                 } else {
                     nal_unit
                 }
             } else {
-                break
+                break;
             };
 
             // check if this is the last NAL unit in the AU

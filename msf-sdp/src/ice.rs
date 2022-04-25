@@ -178,7 +178,7 @@ impl<'a> TryFrom<&'a str> for CandidateDescription<'a> {
             transport: transport.into(),
             priority,
             address: SocketAddr::from((addr, port)),
-            candidate_type: candidate_type.into(),
+            candidate_type,
             related_address,
         };
 

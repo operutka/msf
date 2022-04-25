@@ -8,6 +8,9 @@ pub mod packetizer;
 pub mod rtcp;
 pub mod utils;
 
+#[cfg(feature = "h264")]
+pub mod h264;
+
 #[cfg(feature = "pcm")]
 pub mod pcm;
 

@@ -1,0 +1,21 @@
+[package]
+name = "msf-util"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-util/"
+repository = "https://github.com/operutka/msf"
+description = """
+Common utilities for Media Streaming Framework.
+"""
+keywords = ["protocol", "network", "audio", "video", "media"]
+
+[features]
+default = []
+h264 = ["bytes"]
+
+[dependencies.bytes]
+version = "1"
+optional = true

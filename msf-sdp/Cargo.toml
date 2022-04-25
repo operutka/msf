@@ -15,11 +15,25 @@ keywords = ["protocol", "parser", "audio", "video", "media"]
 [features]
 default = []
 ice = ["msf-ice"]
+h264 = ["base64", "bytes", "msf-util/h264"]
 
 [dependencies]
 str-reader = "0.1"
+
+[dependencies.base64]
+version = "0.13"
+optional = true
+
+[dependencies.bytes]
+version = "1"
+optional = true
 
 [dependencies.msf-ice]
 version = "0.1"
 optional = true
 path = "../msf-ice"
+
+[dependencies.msf-util]
+#version = "0.1"
+optional = true
+path = "../msf-util"

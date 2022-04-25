@@ -8,6 +8,9 @@ pub mod connection;
 pub mod media;
 pub mod time;
 
+#[cfg(feature = "h264")]
+pub mod h264;
+
 #[cfg(feature = "ice")]
 pub mod ice;
 

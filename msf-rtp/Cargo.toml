@@ -14,6 +14,7 @@ keywords = ["protocol", "network", "audio", "video", "media"]
 
 [features]
 default = []
+h264 = ["msf-util/h264"]
 pcm = ["msf-sdp"]
 
 [dependencies]
@@ -24,6 +25,11 @@ futures = "0.3"
 version = "0.1"
 optional = true
 path = "../msf-sdp"
+
+[dependencies.msf-util]
+#version = "0.1"
+optional = true
+path = "../msf-util"
 
 [dependencies.tokio]
 version = "1"

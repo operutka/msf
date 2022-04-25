@@ -46,7 +46,6 @@ use std::{
     fmt::{self, Display, Formatter, Write},
     future::Future,
     io, ptr,
-    str::FromStr,
 };
 
 use bytes::Bytes;
@@ -355,7 +354,7 @@ impl SrtpContext {
     pub fn connect_srtp<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -370,7 +369,7 @@ impl SrtpContext {
     pub fn connect_srtcp<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -385,7 +384,7 @@ impl SrtpContext {
     pub fn connect_muxed<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -400,7 +399,7 @@ impl SrtpContext {
     pub fn accept_srtp<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -415,7 +414,7 @@ impl SrtpContext {
     pub fn accept_srtcp<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -430,7 +429,7 @@ impl SrtpContext {
     pub fn accept_muxed<S>(
         &self,
         stream: S,
-        peer_cert_fingerprint: &str,
+        peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
     where
         S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -441,9 +440,7 @@ impl SrtpContext {
     }
 
     /// Create a new connector.
-    fn new_connector(&self, peer_cert_fingerprint: &str) -> Result<Connector, InternalError> {
-        let expected_fingerprint = CertificateFingerprint::from_str(peer_cert_fingerprint)?;
-
+    fn new_connector(&self, peer_cert_fingerprint: CertificateFingerprint) -> Result<Connector, InternalError> {
         let mut ssl = Ssl::new(&self.ssl_context)?;
 
         ssl.set_tlsext_use_srtp(&self.srtp_profiles)?;
@@ -453,7 +450,7 @@ impl SrtpContext {
         ssl.set_verify_callback(verify_mode, move |_, store| {
             if let Some(chain) = store.chain() {
                 if let Some(cert) = chain.get(0) {
-                    if let Ok(success) = expected_fingerprint.verify(cert) {
+                    if let Ok(success) = peer_cert_fingerprint.verify(cert) {
                         return success;
                     }
                 }

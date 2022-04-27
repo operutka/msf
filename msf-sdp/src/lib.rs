@@ -41,7 +41,7 @@ pub use self::{
 #[derive(Debug)]
 pub struct ParseError {
     msg: String,
-    cause: Option<Box<dyn Error + Send>>,
+    cause: Option<Box<dyn Error + Send + Sync>>,
 }
 
 impl ParseError {
@@ -68,22 +68,22 @@ impl ParseError {
     pub fn with_cause_and_msg<M, C>(msg: M, cause: C) -> Self
     where
         M: ToString,
-        C: Error + Send + 'static,
+        C: Into<Box<dyn Error + Send + Sync>>,
     {
         Self {
             msg: msg.to_string(),
-            cause: Some(Box::new(cause)),
+            cause: Some(cause.into()),
         }
     }
 
     /// Create a parse error with a given cause.
     pub fn with_cause<C>(cause: C) -> Self
     where
-        C: Error + Send + 'static,
+        C: Into<Box<dyn Error + Send + Sync>>,
     {
         Self {
             msg: String::new(),
-            cause: Some(Box::new(cause)),
+            cause: Some(cause.into()),
         }
     }
 }

@@ -183,21 +183,20 @@ where
     P: Packetizer,
     S::Error: From<P::Error>,
 {
+    /// Get the next packet to be sent.
+    fn next_packet(&mut self) -> Result<Option<RtpPacket>, P::Error> {
+        if let Some(packet) = self.pending.take() {
+            Ok(Some(packet))
+        } else {
+            self.packetizer.take()
+        }
+    }
+
     /// Flush the underlying packetizer.
     fn poll_flush_packetizer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
-        if self.pending.is_none() {
-            self.pending = self.packetizer.take()?;
-        }
-
-        while let Some(packet) = self.pending.take() {
+        while let Some(packet) = self.next_packet()? {
             match self.rtp_sink.poll_ready_unpin(cx) {
-                Poll::Ready(Ok(())) => {
-                    // send the pending packet
-                    self.rtp_sink.start_send_unpin(packet)?;
-
-                    // ... and get the next one (if there is one)
-                    self.pending = self.packetizer.take()?;
-                }
+                Poll::Ready(Ok(())) => self.rtp_sink.start_send_unpin(packet)?,
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                 Poll::Pending => {
                     // we'll have to try it next time

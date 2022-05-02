@@ -1,3 +1,5 @@
+//! H.264 codec utilities.
+
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
@@ -5,6 +7,7 @@ use std::{
 
 use bytes::{Buf, Bytes};
 
+/// Error indicating an invalid H.264 byte stream.
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidByteStream;
 

@@ -1,6 +1,6 @@
 [package]
 name = "msf-webrtc"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -18,18 +18,18 @@ logging-slog = ["msf-ice/slog"]
 sdp = ["msf-sdp/ice"]
 
 [dependencies.msf-ice]
-version = "0.1"
+version = "0.2"
 path = "../msf-ice"
 
 [dependencies.msf-rtp]
-version = "0.1"
+version = "0.2"
 path = "../msf-rtp"
 
 [dependencies.msf-sdp]
-version = "0.1"
+version = "0.2"
 optional = true
 path = "../msf-sdp"
 
 [dependencies.msf-srtp]
-version = "0.1"
+version = "0.2"
 path = "../msf-srtp"

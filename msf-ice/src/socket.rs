@@ -53,13 +53,13 @@ impl Packet {
     }
 }
 
-///
+/// Type alias.
 type InputPacket = Packet;
 
-///
+/// Type alias.
 type OutputPacket = (SocketAddr, Bytes);
 
-///
+/// Type alias.
 type OutputPacketTx = mpsc::UnboundedSender<OutputPacket>;
 
 /// ICE socket manager.
@@ -123,22 +123,11 @@ impl ICESockets {
 
     /// Get the next local binding.
     pub fn poll_next_binding(&mut self, cx: &mut Context<'_>) -> Poll<Option<Binding>> {
-        let mut pending = true;
-
-        while let Poll::Ready(ready) = self.socket_rx.poll_next_unpin(cx) {
-            if let Some(socket) = ready {
-                self.open_sockets.push(socket);
-            } else {
-                // we can return None if necessary
-                pending = false;
-
-                break;
-            }
-        }
+        let sockets = self.poll_sockets(cx);
 
         if let Some(binding) = ready!(self.binding_rx.poll_next_unpin(cx)) {
             Poll::Ready(Some(binding))
-        } else if pending {
+        } else if sockets.is_pending() {
             Poll::Pending
         } else {
             Poll::Ready(None)
@@ -185,9 +174,22 @@ impl ICESockets {
             debug!(self.logger, "unknown socket for local binding"; "binding" => %local_addr);
         }
     }
+
+    /// Poll pending sockets.
+    fn poll_sockets(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        while let Poll::Ready(ready) = self.socket_rx.poll_next_unpin(cx) {
+            if let Some(socket) = ready {
+                self.open_sockets.push(socket);
+            } else {
+                return Poll::Ready(());
+            }
+        }
+
+        Poll::Pending
+    }
 }
 
-///
+/// Socket binding.
 #[derive(Copy, Clone)]
 pub enum Binding {
     Local(LocalBinding),
@@ -195,36 +197,36 @@ pub enum Binding {
 }
 
 impl Binding {
-    ///
+    /// Create a new local binding.
     fn local(addr: SocketAddr) -> Self {
         Self::Local(LocalBinding::new(addr))
     }
 
-    ///
+    /// Create a new reflexive binding.
     fn reflexive(base: SocketAddr, addr: SocketAddr, source: SocketAddr) -> Self {
         Self::Reflexive(ReflexiveBinding::new(base, addr, source))
     }
 }
 
-///
+/// Local socket binding.
 #[derive(Copy, Clone)]
 pub struct LocalBinding {
     addr: SocketAddr,
 }
 
 impl LocalBinding {
-    ///
+    /// Create a new binding.
     fn new(addr: SocketAddr) -> Self {
         Self { addr }
     }
 
-    ///
+    /// Socket address where the socket is bound to.
     pub fn addr(self) -> SocketAddr {
         self.addr
     }
 }
 
-///
+/// Reflexive socket binding.
 #[derive(Copy, Clone)]
 pub struct ReflexiveBinding {
     base: SocketAddr,
@@ -233,28 +235,28 @@ pub struct ReflexiveBinding {
 }
 
 impl ReflexiveBinding {
-    ///
+    /// Create a new binding.
     fn new(base: SocketAddr, addr: SocketAddr, source: SocketAddr) -> Self {
         Self { base, addr, source }
     }
 
-    ///
+    /// Local socket address where the socket is bound to.
     pub fn base(&self) -> SocketAddr {
         self.base
     }
 
-    ///
+    /// Public socket address where the socket is bound to.
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
 
-    ///
+    /// Source of the binding information (e.g. a STUN server).
     pub fn source(&self) -> SocketAddr {
         self.source
     }
 }
 
-///
+/// ICE socket.
 struct Socket {
     local_addr: SocketAddr,
     output_packet_tx: OutputPacketTx,
@@ -263,7 +265,18 @@ struct Socket {
 }
 
 impl Socket {
+    /// Create a new ICE socket.
     ///
+    /// A new UDP socket will be created and it will be bound to a given local
+    /// address (the port will be assigned automatically if the given port is
+    /// 0).
+    ///
+    /// Once the socket is created a server-reflexive address will be
+    /// automatically obtained from one of the given STUN servers.
+    ///
+    /// All incoming packets will be passed to a given packet sink and all
+    /// bindings (the local binding and optionally the server-reflexive
+    /// binding) will be passed to a given binding sink.
     async fn new<S, B>(
         logger: Logger,
         local_addr: SocketAddr,
@@ -324,7 +337,7 @@ impl Socket {
         Ok(res)
     }
 
-    /// Check if the socket bound to a given address.
+    /// Check if the socket is bound to a given address.
     fn is_bound_to(&self, local_addr: SocketAddr) -> bool {
         self.local_addr == local_addr
             || (local_addr.port() == 0 && self.local_addr.ip() == local_addr.ip())
@@ -345,14 +358,14 @@ impl Drop for Socket {
     }
 }
 
-///
+/// Helper struct.
 struct UdpSocketWrapper {
     inner: Arc<UdpSocket>,
     local_addr: SocketAddr,
 }
 
 impl UdpSocketWrapper {
-    ///
+    /// Create a new UDP socket bound to a given local address.
     async fn bind(local_addr: SocketAddr) -> io::Result<Self> {
         let socket = UdpSocket::bind(local_addr).await?;
 
@@ -366,12 +379,12 @@ impl UdpSocketWrapper {
         Ok(res)
     }
 
-    ///
+    /// Get the socket binding.
     fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    ///
+    /// Send all packets from a given stream using the underlying UDP socket.
     fn write_all<S>(&self, logger: Logger, mut stream: S) -> impl Future<Output = ()>
     where
         S: Stream<Item = OutputPacket> + Unpin,
@@ -391,7 +404,8 @@ impl UdpSocketWrapper {
         }
     }
 
-    ///
+    /// Read all packets from the underlying UDP socket and feed them to a
+    /// given sink.
     async fn read_all<S>(
         self,
         logger: Logger,
@@ -431,7 +445,7 @@ impl UdpSocketWrapper {
     }
 }
 
-///
+/// Helper struct.
 struct UdpSocketStream {
     socket: Option<Arc<UdpSocket>>,
     local_addr: SocketAddr,
@@ -485,10 +499,10 @@ const RTO: u64 = 500;
 const RM: u64 = 16;
 const RC: u32 = 7;
 
-///
+/// Type alias.
 type StunTransactionId = [u8; 12];
 
-///
+/// Socket STUN context.
 #[derive(Clone)]
 struct StunContext {
     inner: Arc<Mutex<InnerStunContext>>,
@@ -496,7 +510,7 @@ struct StunContext {
 }
 
 impl StunContext {
-    ///
+    /// Create a new STUN context.
     fn new(output_packet_tx: OutputPacketTx) -> Self {
         Self {
             inner: Arc::new(Mutex::new(InnerStunContext::new())),
@@ -504,7 +518,7 @@ impl StunContext {
         }
     }
 
-    ///
+    /// Get server-reflexive address using one of the given STUN servers.
     async fn get_reflexive_addr<I>(&mut self, stun_servers: I) -> Option<(SocketAddr, SocketAddr)>
     where
         I: IntoIterator<Item = SocketAddr>,
@@ -538,7 +552,8 @@ impl StunContext {
         reflexive_addrs.next().await
     }
 
-    ///
+    /// Keep alive the server-reflexive binding by sending STUN requests to a
+    /// given STUN server in a given interval.
     async fn keep_alive(&mut self, stun_server: SocketAddr, interval: Duration) {
         loop {
             tokio::time::sleep(interval).await;
@@ -547,7 +562,7 @@ impl StunContext {
         }
     }
 
-    ///
+    /// Create a new binding request.
     fn new_binding_request(
         &mut self,
         stun_server: SocketAddr,
@@ -578,36 +593,37 @@ impl StunContext {
         transaction.resolve()
     }
 
-    ///
+    /// Remove a given STUN transaction handle.
     fn remove_handle(&mut self, id: StunTransactionId) {
         self.inner.lock().unwrap().remove_handle(id);
     }
 
-    ///
+    /// Process and consume a given input packet or return it back for further
+    /// processing by the ICE channel.
     fn process_packet(&mut self, packet: InputPacket) -> Result<(), InputPacket> {
         self.inner.lock().unwrap().process_packet(packet)
     }
 }
 
-///
+/// Inner STUN context.
 struct InnerStunContext {
     transactions: Vec<StunTransactionHandle>,
 }
 
 impl InnerStunContext {
-    ///
+    /// Create a new context.
     fn new() -> Self {
         Self {
             transactions: Vec::new(),
         }
     }
 
-    ///
+    /// Add a given transaction handle.
     fn add_handle(&mut self, handle: StunTransactionHandle) {
         self.transactions.push(handle);
     }
 
-    ///
+    /// Remove a given transaction handle and return it.
     fn remove_handle(
         &mut self,
         transaction_id: StunTransactionId,
@@ -618,7 +634,7 @@ impl InnerStunContext {
             .map(|i| self.transactions.swap_remove(i))
     }
 
-    ///
+    /// Process a given input packet.
     fn process_packet(&mut self, packet: InputPacket) -> Result<(), InputPacket> {
         let data = packet.data();
 
@@ -643,7 +659,7 @@ impl InnerStunContext {
     }
 }
 
-///
+/// STUN transaction.
 struct StunTransaction<S, F> {
     context: StunContext,
     output_packet_tx: S,
@@ -660,7 +676,7 @@ where
     S: Sink<OutputPacket> + Unpin,
     F: Future<Output = Result<SocketAddr, E>> + Unpin,
 {
-    ///
+    /// Resolve the transaction.
     async fn resolve(mut self) -> io::Result<SocketAddr> {
         let builder = stun::MessageBuilder::binding_request(self.transaction_id);
 
@@ -698,22 +714,22 @@ impl<S, F> Drop for StunTransaction<S, F> {
     }
 }
 
-///
+/// Type alias.
 type ReflexiveAddrTx = oneshot::Sender<SocketAddr>;
 
-///
+/// STUN transaction handle.
 struct StunTransactionHandle {
     transaction_id: StunTransactionId,
     reflexive_addr_tx: ReflexiveAddrTx,
 }
 
 impl StunTransactionHandle {
-    ///
+    /// Get the transaction ID.
     fn transaction_id(&self) -> StunTransactionId {
         self.transaction_id
     }
 
-    ///
+    /// Resolve the STUN transaction.
     fn resolve(self, reflexive_addr: SocketAddr) {
         let _ = self.reflexive_addr_tx.send(reflexive_addr);
     }

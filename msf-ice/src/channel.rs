@@ -115,7 +115,7 @@ impl Channel {
         }
     }
 
-    ///
+    /// Get the next socket binding.
     fn poll_next_socket_binding(
         &mut self,
         cx: &mut Context<'_>,
@@ -139,7 +139,7 @@ impl Channel {
         }
     }
 
-    ///
+    /// Process a given socket binding.
     fn process_socket_binding(&mut self, component: u8, binding: SocketBinding) {
         match binding {
             SocketBinding::Local(binding) => self.process_local_binding(component, binding),
@@ -147,7 +147,7 @@ impl Channel {
         }
     }
 
-    ///
+    /// Process a given socket binding.
     fn process_local_binding(&mut self, component: u8, binding: LocalBinding) {
         let addr = binding.addr();
 
@@ -166,7 +166,7 @@ impl Channel {
         }
     }
 
-    ///
+    /// Process a given socket binding.
     fn process_reflexive_binding(&mut self, component: u8, binding: ReflexiveBinding) {
         let candidate = LocalCandidate::server_reflexive(
             self.channel_index,

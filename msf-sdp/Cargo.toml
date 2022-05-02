@@ -1,6 +1,6 @@
 [package]
 name = "msf-sdp"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -29,11 +29,11 @@ version = "1"
 optional = true
 
 [dependencies.msf-ice]
-version = "0.1"
+version = "0.2"
 optional = true
 path = "../msf-ice"
 
 [dependencies.msf-util]
-#version = "0.1"
+version = "0.1"
 optional = true
 path = "../msf-util"

@@ -1,3 +1,5 @@
+//! H.264 extensions.
+
 use std::fmt::{self, Display, Formatter};
 
 use base64::display::Base64Display;

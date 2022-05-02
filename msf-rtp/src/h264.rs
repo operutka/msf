@@ -131,7 +131,7 @@ impl H264Packetizer {
                 .with_ssrc(self.ssrc)
                 .with_sequence_number(self.sequence_number)
                 .with_timestamp(timestamp)
-                .with_marker(marker)
+                .with_marker(marker && nal_unit.is_empty())
                 .with_payload(payload.freeze(), 0);
 
             self.sequence_number = self.sequence_number.wrapping_add(1);

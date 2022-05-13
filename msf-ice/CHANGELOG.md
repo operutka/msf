@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 (2022-05-13)
+
+* Fix signaling no-more-candidates by the ICE agent
+
 ## v0.2.0 (2022-05-02)
 
 * Create ICE components using the agent/channel builder instead of polling them

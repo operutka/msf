@@ -320,6 +320,9 @@ impl Socket {
 
                 let _ = binding_tx.send(binding).await;
 
+                // there will be no more bindings from us
+                std::mem::drop(binding_tx);
+
                 // TODO: check the timing
                 stun_context
                     .keep_alive(stun_server, Duration::from_secs(10))

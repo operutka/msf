@@ -86,19 +86,11 @@ impl Display for H264Parameters {
             f.write_str(";sprop-parameter-sets=")?;
 
             if let Ok(Some(nal_unit)) = extract_nal_unit(&mut parameter_sets) {
-                write!(
-                    f,
-                    "{}",
-                    Base64Display::new(&nal_unit, &BASE64_STANDARD)
-                )?;
+                write!(f, "{}", Base64Display::new(&nal_unit, &BASE64_STANDARD))?;
             }
 
             while let Ok(Some(nal_unit)) = extract_nal_unit(&mut parameter_sets) {
-                write!(
-                    f,
-                    ",{}",
-                    Base64Display::new(&nal_unit, &BASE64_STANDARD)
-                )?;
+                write!(f, ",{}", Base64Display::new(&nal_unit, &BASE64_STANDARD))?;
             }
         }
 

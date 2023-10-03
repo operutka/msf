@@ -2,7 +2,7 @@
 
 use std::fmt::{self, Display, Formatter};
 
-use base64::display::Base64Display;
+use base64::{display::Base64Display, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use msf_util::h264::{extract_nal_unit, InvalidByteStream};
 
@@ -89,7 +89,7 @@ impl Display for H264Parameters {
                 write!(
                     f,
                     "{}",
-                    Base64Display::with_config(&nal_unit, base64::STANDARD)
+                    Base64Display::new(&nal_unit, &BASE64_STANDARD)
                 )?;
             }
 
@@ -97,7 +97,7 @@ impl Display for H264Parameters {
                 write!(
                     f,
                     ",{}",
-                    Base64Display::with_config(&nal_unit, base64::STANDARD)
+                    Base64Display::new(&nal_unit, &BASE64_STANDARD)
                 )?;
             }
         }

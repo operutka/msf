@@ -18,6 +18,6 @@ ice = []
 
 [dependencies]
 bytes = "1"
-crc = "2"
+crc = "3"
 hmac = "0.12"
 sha-1 = "0.10"

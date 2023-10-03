@@ -8,3 +8,4 @@ members = [
     "msf-util",
     "msf-webrtc",
 ]
+resolver = "2"

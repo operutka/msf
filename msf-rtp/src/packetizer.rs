@@ -55,7 +55,7 @@ pub trait Packetizer {
         WithFrame {
             packetizer: self,
             closure: f,
-            _frame: PhantomData::default(),
+            _frame: PhantomData,
         }
     }
 

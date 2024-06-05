@@ -21,7 +21,7 @@ h264 = ["base64", "bytes", "msf-util/h264"]
 str-reader = "0.1"
 
 [dependencies.base64]
-version = "0.21"
+version = "0.22"
 optional = true
 
 [dependencies.bytes]

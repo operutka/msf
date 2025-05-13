@@ -111,7 +111,7 @@ pub struct SessionGuard<'a> {
     inner: MutexGuard<'a, SessionContext>,
 }
 
-impl<'a> SessionGuard<'a> {
+impl SessionGuard<'_> {
     /// Get the current agent role.
     pub fn get_agent_role(&self) -> AgentRole {
         self.inner.agent_role

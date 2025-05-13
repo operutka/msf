@@ -422,7 +422,7 @@ struct RtcpSender<T> {
 }
 
 impl<T> RtcpSender<T> {
-    ///
+    /// Poll the next RTCP packet.
     fn poll_next_packet(&mut self, cx: &mut Context) -> Poll<Option<CompoundRtcpPacket>> {
         if let Some(close_rx) = self.close_rx.as_mut() {
             if close_rx.poll_unpin(cx).is_ready() {

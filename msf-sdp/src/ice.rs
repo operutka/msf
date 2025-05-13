@@ -24,7 +24,7 @@ pub struct CandidateDescription<'a> {
     related_address: Option<SocketAddr>,
 }
 
-impl<'a> CandidateDescription<'a> {
+impl CandidateDescription<'_> {
     /// Create a new candidate description from a given local candidate.
     pub fn from_local_candidate(candidate: &LocalCandidate) -> Self {
         let related_address = if candidate.kind() == CandidateKind::Host {
@@ -59,7 +59,7 @@ impl<'a> CandidateDescription<'a> {
     }
 }
 
-impl<'a> Display for CandidateDescription<'a> {
+impl Display for CandidateDescription<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let candidate_type = match self.candidate_type {
             CandidateKind::Host => "host",

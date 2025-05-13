@@ -408,7 +408,7 @@ struct HandshakeState<'a, S> {
     inner: HandshakeResult<'a, S>,
 }
 
-impl<'a, S> HandshakeState<'a, S> {
+impl<S> HandshakeState<'_, S> {
     /// Use a given asynchronous context on the next IO operation.
     fn set_async_context(&mut self, cx: Option<&mut Context<'_>>) {
         let ssl_stream = match &mut self.inner {
@@ -450,7 +450,9 @@ impl<'a, S> InnerSslStream<'a, S> {
             context: ptr::null_mut(),
         }
     }
+}
 
+impl<S> InnerSslStream<'_, S> {
     /// Use a given asynchronous context on the next IO operation.
     fn set_async_context(&mut self, cx: Option<&mut Context<'_>>) {
         if let Some(cx) = cx {
@@ -461,10 +463,10 @@ impl<'a, S> InnerSslStream<'a, S> {
     }
 }
 
-unsafe impl<'a, S> Send for InnerSslStream<'a, S> where S: Send {}
-unsafe impl<'a, S> Sync for InnerSslStream<'a, S> where S: Sync {}
+unsafe impl<S> Send for InnerSslStream<'_, S> where S: Send {}
+unsafe impl<S> Sync for InnerSslStream<'_, S> where S: Sync {}
 
-impl<'a, S> Read for InnerSslStream<'a, S>
+impl<S> Read for InnerSslStream<'_, S>
 where
     S: Stream<Item = io::Result<Bytes>> + Unpin,
 {
@@ -487,7 +489,7 @@ where
     }
 }
 
-impl<'a, S> Write for InnerSslStream<'a, S>
+impl<S> Write for InnerSslStream<'_, S>
 where
     S: Sink<Bytes, Error = io::Error> + Unpin,
 {
@@ -538,7 +540,7 @@ impl<'a, S> RWStreamRef<'a, S> {
     }
 }
 
-impl<'a, S> AsyncRead for RWStreamRef<'a, S>
+impl<S> AsyncRead for RWStreamRef<'_, S>
 where
     S: Stream<Item = io::Result<Bytes>> + Unpin,
 {
@@ -569,7 +571,7 @@ where
     }
 }
 
-impl<'a, S> AsyncWrite for RWStreamRef<'a, S>
+impl<S> AsyncWrite for RWStreamRef<'_, S>
 where
     S: Sink<Bytes, Error = io::Error> + Unpin,
 {

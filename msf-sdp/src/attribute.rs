@@ -262,7 +262,9 @@ impl<'a> RTPMap<'a> {
             encoding_parameters: None,
         }
     }
+}
 
+impl RTPMap<'_> {
     /// Set the encoding parameters.
     #[inline]
     pub fn with_encoding_parameters<T>(mut self, params: T) -> Self
@@ -298,7 +300,7 @@ impl<'a> RTPMap<'a> {
     }
 }
 
-impl<'a> Display for RTPMap<'a> {
+impl Display for RTPMap<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
@@ -354,7 +356,7 @@ pub struct FormatParameters<'a> {
     params: Cow<'a, str>,
 }
 
-impl<'a> FormatParameters<'a> {
+impl FormatParameters<'_> {
     /// Create a new fmtp attribute value.
     #[inline]
     pub fn new<T, U>(format: T, parameters: U) -> Self
@@ -381,7 +383,7 @@ impl<'a> FormatParameters<'a> {
     }
 }
 
-impl<'a> Display for FormatParameters<'a> {
+impl Display for FormatParameters<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{} {}", self.format, self.params)
     }

@@ -459,5 +459,5 @@ impl CheckMessage {
 pub enum CheckError {
     Failed,
     RoleConflict(AgentRole),
-    UnknownTransaction(TransactionId),
+    UnknownTransaction,
 }

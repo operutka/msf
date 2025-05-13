@@ -405,7 +405,7 @@ impl Checklist {
     ) -> Result<Option<&CandidatePair>, CheckError> {
         let check = self
             .find_check_mut(|c| c.transaction_id() == Some(response.transaction_id()))
-            .ok_or_else(|| CheckError::UnknownTransaction(response.transaction_id()))?;
+            .ok_or(CheckError::UnknownTransaction)?;
 
         let nominated = check.is_nominated();
         let source_pair = check.candidate_pair();

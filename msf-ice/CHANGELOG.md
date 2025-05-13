@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2 (2025-05-13)
+
+* Update rand version
+
 ## v0.2.1 (2022-05-13)
 
 * Fix signaling no-more-candidates by the ICE agent

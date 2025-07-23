@@ -450,27 +450,27 @@ impl Display for SessionDescription {
         write!(f, "s={}\r\n", self.session_name)?;
 
         if let Some(info) = self.session_information.as_ref() {
-            write!(f, "i={}\r\n", info)?;
+            write!(f, "i={info}\r\n")?;
         }
 
         if let Some(url) = self.url.as_ref() {
-            write!(f, "u={}\r\n", url)?;
+            write!(f, "u={url}\r\n")?;
         }
 
         for email in &self.emails {
-            write!(f, "e={}\r\n", email)?;
+            write!(f, "e={email}\r\n")?;
         }
 
         for phone in &self.phones {
-            write!(f, "p={}\r\n", phone)?;
+            write!(f, "p={phone}\r\n")?;
         }
 
         if let Some(connection) = self.connection.as_ref() {
-            write!(f, "c={}\r\n", connection)?;
+            write!(f, "c={connection}\r\n")?;
         }
 
         for bw in &self.bandwidth {
-            write!(f, "b={}\r\n", bw)?;
+            write!(f, "b={bw}\r\n")?;
         }
 
         for td in &self.time_descriptions {
@@ -482,11 +482,11 @@ impl Display for SessionDescription {
         }
 
         if let Some(k) = self.key.as_ref() {
-            write!(f, "k={}\r\n", k)?;
+            write!(f, "k={k}\r\n")?;
         }
 
         for attr in self.attributes.iter() {
-            write!(f, "a={}\r\n", attr)?;
+            write!(f, "a={attr}\r\n")?;
         }
 
         for media in &self.media {
@@ -517,7 +517,7 @@ impl FromSessionDescriptionLines for SessionDescription {
                 'k' => sdp.key = Some(lines.parse()?),
                 'a' => sdp.attributes.push(lines.parse()?),
                 'm' => sdp.media.push(lines.parse_multiple()?),
-                _ => return Err(ParseError::with_msg(format!("unknown SDP field: {}", t))),
+                _ => return Err(ParseError::with_msg(format!("unknown SDP field: {t}"))),
             }
         }
 

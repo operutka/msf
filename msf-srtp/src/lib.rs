@@ -116,9 +116,9 @@ impl Display for InternalError {
             Self::MissingProfile => f.write_str("no SRTP profile selected"),
             Self::UnsupportedProfile => f.write_str("unsupported SRTP profile"),
             Self::InvalidPacketType => f.write_str("invalid packet type"),
-            Self::InvalidFingerprint(err) => write!(f, "invalid fingerprint: {}", err),
-            Self::OpenSslError(err) => write!(f, "SSL error: {}", err),
-            Self::IOError(err) => write!(f, "IO error: {}", err),
+            Self::InvalidFingerprint(err) => write!(f, "invalid fingerprint: {err}"),
+            Self::OpenSslError(err) => write!(f, "SSL error: {err}"),
+            Self::IOError(err) => write!(f, "IO error: {err}"),
         }
     }
 }
@@ -243,11 +243,11 @@ impl SrtpContextBuilder {
         let mut iter = self.profiles.iter();
 
         if let Some(profile) = iter.next() {
-            write!(profiles, "{}", profile).unwrap();
+            let _ = write!(profiles, "{profile}");
         }
 
         for profile in iter {
-            write!(profiles, ":{}", profile).unwrap();
+            let _ = write!(profiles, ":{profile}");
         }
 
         let res = SrtpContext {

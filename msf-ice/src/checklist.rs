@@ -172,7 +172,7 @@ impl Checklist {
         let remote_username = remote_credentials.username();
         let remote_password = remote_credentials.password();
 
-        let username = format!("{}:{}", remote_username, local_username);
+        let username = format!("{remote_username}:{local_username}");
 
         self.set_agent_role(agent_role);
 

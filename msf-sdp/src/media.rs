@@ -230,35 +230,35 @@ impl Display for MediaDescription {
         write!(f, "m={} {}", self.media_type, self.port)?;
 
         if let Some(count) = self.port_count {
-            write!(f, "/{}", count)?;
+            write!(f, "/{count}")?;
         }
 
         write!(f, " {}", self.protocol)?;
 
         for fmt in &self.formats {
-            write!(f, " {}", fmt)?;
+            write!(f, " {fmt}")?;
         }
 
         f.write_str("\r\n")?;
 
         if let Some(title) = self.title.as_ref() {
-            write!(f, "i={}\r\n", title)?;
+            write!(f, "i={title}\r\n")?;
         }
 
         for connection in &self.connection {
-            write!(f, "c={}\r\n", connection)?;
+            write!(f, "c={connection}\r\n")?;
         }
 
         for bw in &self.bandwidth {
-            write!(f, "b={}\r\n", bw)?;
+            write!(f, "b={bw}\r\n")?;
         }
 
         if let Some(k) = self.key.as_ref() {
-            write!(f, "k={}\r\n", k)?;
+            write!(f, "k={k}\r\n")?;
         }
 
         for attr in self.attributes.iter() {
-            write!(f, "a={}\r\n", attr)?;
+            write!(f, "a={attr}\r\n")?;
         }
 
         Ok(())
@@ -311,8 +311,7 @@ impl FromSessionDescriptionLines for MediaDescription {
                 'a' => mdp.attributes.push(lines.parse()?),
                 _ => {
                     return Err(ParseError::with_msg(format!(
-                        "unknown media description field: {}",
-                        t
+                        "unknown media description field: {t}",
                     )))
                 }
             }

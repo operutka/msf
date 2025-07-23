@@ -94,8 +94,8 @@ impl ConnectionAddress {
 impl Display for ConnectionAddress {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::IPv4(addr) => write!(f, "IP4 {}", addr),
-            Self::IPv6(addr) => write!(f, "IP6 {}", addr),
+            Self::IPv4(addr) => write!(f, "IP4 {addr}"),
+            Self::IPv6(addr) => write!(f, "IP6 {addr}"),
             Self::Other(addr) => write!(f, "{} {}", addr.address_type, addr),
         }
     }
@@ -194,10 +194,10 @@ impl Display for IPv4Address {
         write!(f, "{}", self.address)?;
 
         if let Some(ttl) = self.ttl {
-            write!(f, "/{}", ttl)?;
+            write!(f, "/{ttl}")?;
 
             if let Some(count) = self.count {
-                write!(f, "/{}", count)?;
+                write!(f, "/{count}")?;
             }
         }
 
@@ -290,7 +290,7 @@ impl Display for IPv6Address {
         write!(f, "{}", self.address)?;
 
         if let Some(count) = self.count {
-            write!(f, "/{}", count)?;
+            write!(f, "/{count}")?;
         }
 
         Ok(())

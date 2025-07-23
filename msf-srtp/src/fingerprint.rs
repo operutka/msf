@@ -156,11 +156,11 @@ impl Display for CertificateFingerprint {
         let mut bytes = self.fingerprint.iter();
 
         if let Some(b) = bytes.next() {
-            write!(f, " {:02X}", b)?;
+            write!(f, " {b:02X}")?;
         }
 
         for b in bytes {
-            write!(f, ":{:02X}", b)?;
+            write!(f, ":{b:02X}")?;
         }
 
         Ok(())

@@ -66,7 +66,7 @@ impl Display for TimeDescription {
         write!(f, "t={} {}\r\n", self.start, self.stop)?;
 
         for repeat in &self.repeat_times {
-            write!(f, "r={}\r\n", repeat)?;
+            write!(f, "r={repeat}\r\n")?;
         }
 
         Ok(())
@@ -161,7 +161,7 @@ impl Display for RepeatTime {
         write!(f, "{} {}", self.repeat_interval, self.active_duration)?;
 
         for offset in &self.offsets {
-            write!(f, " {}", offset)?;
+            write!(f, " {offset}")?;
         }
 
         Ok(())
@@ -284,11 +284,11 @@ impl Display for TimeZoneAdjustments {
         let mut iter = self.inner.iter();
 
         if let Some(adj) = iter.next() {
-            write!(f, "{}", adj)?;
+            write!(f, "{adj}")?;
         }
 
         for adj in iter {
-            write!(f, " {}", adj)?;
+            write!(f, " {adj}")?;
         }
 
         Ok(())
@@ -344,10 +344,10 @@ impl CompactDuration {
 impl Display for CompactDuration {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::Seconds(v) => write!(f, "{}", v),
-            Self::Minutes(v) => write!(f, "{}m", v),
-            Self::Hours(v) => write!(f, "{}h", v),
-            Self::Days(v) => write!(f, "{}d", v),
+            Self::Seconds(v) => write!(f, "{v}"),
+            Self::Minutes(v) => write!(f, "{v}m"),
+            Self::Hours(v) => write!(f, "{v}h"),
+            Self::Days(v) => write!(f, "{v}d"),
         }
     }
 }
@@ -404,10 +404,10 @@ impl UnsignedCompactDuration {
 impl Display for UnsignedCompactDuration {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::Seconds(v) => write!(f, "{}", v),
-            Self::Minutes(v) => write!(f, "{}m", v),
-            Self::Hours(v) => write!(f, "{}h", v),
-            Self::Days(v) => write!(f, "{}d", v),
+            Self::Seconds(v) => write!(f, "{v}"),
+            Self::Minutes(v) => write!(f, "{v}m"),
+            Self::Hours(v) => write!(f, "{v}h"),
+            Self::Days(v) => write!(f, "{v}d"),
         }
     }
 }

@@ -63,7 +63,7 @@ impl Display for Attribute {
         f.write_str(&self.name)?;
 
         if let Some(v) = self.value.as_ref() {
-            write!(f, ":{}", v)?;
+            write!(f, ":{v}")?;
         }
 
         Ok(())
@@ -309,7 +309,7 @@ impl Display for RTPMap<'_> {
         )?;
 
         if let Some(params) = self.encoding_parameters.as_ref() {
-            write!(f, "/{}", params)?;
+            write!(f, "/{params}")?;
         }
 
         Ok(())

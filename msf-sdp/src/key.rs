@@ -58,7 +58,7 @@ impl Display for EncryptionKey {
         f.write_str(&self.method)?;
 
         if let Some(k) = self.key.as_ref() {
-            write!(f, ":{}", k)?;
+            write!(f, ":{k}")?;
         }
 
         Ok(())

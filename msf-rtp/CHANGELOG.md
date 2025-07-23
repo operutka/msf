@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 (2025-07-23)
+
+* Fix unaligned reads
+
 ## v0.2.0 (2022-05-02)
 
 * Add automatic RTCP handler (the current version does not do anything)

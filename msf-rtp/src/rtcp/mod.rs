@@ -129,7 +129,7 @@ impl From<u8> for RtcpPacketType {
 }
 
 /// Helper struct.
-#[repr(packed)]
+#[repr(C, packed)]
 struct RawRtcpHeader {
     options: u8,
     packet_type: u8,
@@ -162,7 +162,8 @@ impl RtcpHeader {
         }
 
         let ptr = data.as_ptr() as *const RawRtcpHeader;
-        let raw = unsafe { &*ptr };
+
+        let raw = unsafe { ptr.read_unaligned() };
 
         if (raw.options >> 6) != 2 {
             return Err(InvalidInput);

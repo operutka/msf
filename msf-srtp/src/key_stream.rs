@@ -35,22 +35,7 @@ pub trait KeyStream {
 
         self.take(&mut output[..len])?;
 
-        let u64_len = len >> 3;
-        let rem_len = len & 7;
-
-        let u64_input =
-            unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, u64_len) };
-
-        let u64_output =
-            unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u64, u64_len) };
-
-        for i in 0..u64_len {
-            u64_output[i] ^= u64_input[i];
-        }
-
-        let rem_start = len - rem_len;
-
-        for i in rem_start..len {
+        for i in 0..len {
             output[i] ^= input[i];
         }
 

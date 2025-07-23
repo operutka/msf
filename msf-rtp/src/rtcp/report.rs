@@ -5,7 +5,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::{InvalidInput, RtcpPacket, RtcpPacketType};
 
 /// Helper struct.
-#[repr(packed)]
+#[repr(C, packed)]
 struct RawReportBlock {
     ssrc: u32,
     loss: u32,
@@ -47,7 +47,8 @@ impl ReportBlock {
         }
 
         let ptr = data.as_ptr() as *const RawReportBlock;
-        let raw = unsafe { &*ptr };
+
+        let raw = unsafe { ptr.read_unaligned() };
 
         let res = Self {
             ssrc: u32::from_be(raw.ssrc),
@@ -207,7 +208,7 @@ impl Default for ReportBlock {
 }
 
 /// Helper struct.
-#[repr(packed)]
+#[repr(C, packed)]
 struct RawSenderReportHeader {
     ssrc: u32,
     ntp_timestamp: u64,
@@ -252,7 +253,8 @@ impl SenderReport {
         }
 
         let ptr = data.as_ptr() as *const RawSenderReportHeader;
-        let raw = unsafe { &*ptr };
+
+        let raw = unsafe { ptr.read_unaligned() };
 
         let mut res = Self {
             ssrc: u32::from_be(raw.ssrc),

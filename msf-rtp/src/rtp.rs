@@ -3,7 +3,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::InvalidInput;
 
 /// Helper struct.
-#[repr(packed)]
+#[repr(C, packed)]
 struct RawRtpHeader {
     options: u16,
     sequence_number: u16,
@@ -45,7 +45,8 @@ impl RtpHeader {
         }
 
         let ptr = buffer.as_ptr() as *const RawRtpHeader;
-        let raw = unsafe { &*ptr };
+
+        let raw = unsafe { ptr.read_unaligned() };
 
         let mut res = Self {
             options: u16::from_be(raw.options),
@@ -254,7 +255,7 @@ impl Default for RtpHeader {
 }
 
 /// Helper struct.
-#[repr(packed)]
+#[repr(C, packed)]
 struct RawHeaderExtension {
     misc: u16,
     length: u16,
@@ -286,7 +287,8 @@ impl RtpHeaderExtension {
         }
 
         let ptr = buffer.as_ptr() as *const RawHeaderExtension;
-        let raw = unsafe { &*ptr };
+
+        let raw = unsafe { ptr.read_unaligned() };
 
         let extension_length = (u16::from_be(raw.length) as usize) << 2;
         let misc = u16::from_be(raw.misc);

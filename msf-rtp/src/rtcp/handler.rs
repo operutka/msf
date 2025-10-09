@@ -13,24 +13,27 @@ use tokio::task::JoinHandle;
 
 use crate::{CompoundRtcpPacket, PacketMux, RtpPacket};
 
-/// RTCP protocol handler.
-///
-/// The handler consumes a given RTP-RTCP stream pair and handles all the
-/// necessary RTCP communication. The resulting object can be used as an RTP
-/// stream/sink while the corresponding RTCP communication is handled
-/// automatically by a background task.
-pub struct RtcpHandler<T> {
-    context: RtcpContext,
-    stream: T,
-    receiver: JoinHandle<()>,
-    sender: Option<oneshot::Sender<()>>,
+pin_project_lite::pin_project! {
+    /// RTCP protocol handler.
+    ///
+    /// The handler consumes a given RTP-RTCP stream pair and handles all the
+    /// necessary RTCP communication. The resulting object can be used as an RTP
+    /// stream/sink while the corresponding RTCP communication is handled
+    /// automatically by a background task.
+    pub struct RtcpHandler<T> {
+        #[pin]
+        stream: T,
+        context: RtcpHandlerContext,
+    }
 }
 
 impl<T> RtcpHandler<T> {
     /// Create a new RTCP handler.
     pub fn new<U, E>(rtp: T, rtcp: U) -> Self
     where
-        U: Stream<Item = Result<CompoundRtcpPacket, E>> + Sink<CompoundRtcpPacket> + Send + 'static,
+        U: Send + 'static,
+        U: Stream<Item = Result<CompoundRtcpPacket, E>>,
+        U: Sink<CompoundRtcpPacket>,
     {
         let context = RtcpContext::new();
 
@@ -39,10 +42,12 @@ impl<T> RtcpHandler<T> {
         let (close_tx, close_rx) = oneshot::channel();
 
         let sender = RtcpSender {
-            context: context.clone(),
             sink: rtcp_tx,
-            close_rx: Some(close_rx),
-            pending: None,
+            context: RtcpSenderContext {
+                context: context.clone(),
+                close_rx: Some(close_rx),
+                pending: None,
+            },
         };
 
         let receiver = RtcpReceiver {
@@ -55,38 +60,29 @@ impl<T> RtcpHandler<T> {
         let receiver = tokio::spawn(async move { receiver.await.unwrap_or_default() });
 
         Self {
-            context,
             stream: rtp,
-            receiver,
-            sender: Some(close_tx),
-        }
-    }
-}
-
-impl<T> Drop for RtcpHandler<T> {
-    #[inline]
-    fn drop(&mut self) {
-        // stop the RTCP receiver
-        self.receiver.abort();
-
-        // shutdown the RTCP sender
-        if let Some(close_tx) = self.sender.take() {
-            close_tx.send(()).unwrap_or_default();
+            context: RtcpHandlerContext {
+                context,
+                receiver,
+                sender: Some(close_tx),
+            },
         }
     }
 }
 
 impl<T, E> Stream for RtcpHandler<T>
 where
-    T: Stream<Item = Result<RtpPacket, E>> + Unpin,
+    T: Stream<Item = Result<RtpPacket, E>>,
 {
     type Item = Result<RtpPacket, E>;
 
     #[inline]
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Poll::Ready(ready) = self.stream.poll_next_unpin(cx) {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        if let Poll::Ready(ready) = this.stream.poll_next(cx) {
             if let Some(packet) = ready.transpose()? {
-                self.context.process_incoming_rtp_packet(&packet);
+                this.context.process_incoming_rtp_packet(&packet);
 
                 Poll::Ready(Some(Ok(packet)))
             } else {
@@ -100,29 +96,69 @@ where
 
 impl<T, E> Sink<RtpPacket> for RtcpHandler<T>
 where
-    T: Sink<RtpPacket, Error = E> + Unpin,
+    T: Sink<RtpPacket, Error = E>,
 {
     type Error = E;
 
     #[inline]
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.stream.poll_ready_unpin(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.stream.poll_ready(cx)
     }
 
     #[inline]
-    fn start_send(mut self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
-        self.context.process_outgoing_rtp_packet(&packet);
-        self.stream.start_send_unpin(packet)
+    fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.context.process_outgoing_rtp_packet(&packet);
+
+        this.stream.start_send(packet)
     }
 
     #[inline]
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.stream.poll_flush_unpin(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.stream.poll_flush(cx)
     }
 
     #[inline]
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.stream.poll_close_unpin(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.stream.poll_close(cx)
+    }
+}
+
+/// RTCP handler context.
+struct RtcpHandlerContext {
+    context: RtcpContext,
+    receiver: JoinHandle<()>,
+    sender: Option<oneshot::Sender<()>>,
+}
+
+impl RtcpHandlerContext {
+    /// Process a given incoming RTP packet.
+    fn process_incoming_rtp_packet(&mut self, packet: &RtpPacket) {
+        self.context.process_incoming_rtp_packet(packet);
+    }
+
+    /// Process a given outgoing RTP packet.
+    fn process_outgoing_rtp_packet(&mut self, packet: &RtpPacket) {
+        self.context.process_outgoing_rtp_packet(packet);
+    }
+}
+
+impl Drop for RtcpHandlerContext {
+    fn drop(&mut self) {
+        // stop the RTCP receiver
+        self.receiver.abort();
+
+        // shutdown the RTCP sender
+        if let Some(close_tx) = self.sender.take() {
+            let _ = close_tx.send(());
+        }
     }
 }
 
@@ -152,7 +188,9 @@ impl<E> MuxedRtcpHandler<E> {
     /// Create a new RTCP handler.
     pub fn new<T>(stream: T) -> Self
     where
-        T: Stream<Item = Result<PacketMux, E>> + Sink<PacketMux, Error = E> + Send + 'static,
+        T: Send + 'static,
+        T: Stream<Item = Result<PacketMux, E>>,
+        T: Sink<PacketMux, Error = E>,
         E: Send + 'static,
     {
         let (mut muxed_tx, mut muxed_rx) = stream.split();
@@ -303,10 +341,14 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
     }
 }
 
-/// Helper struct.
-struct StreamSink<T, U> {
-    stream: T,
-    sink: U,
+pin_project_lite::pin_project! {
+    /// Helper struct.
+    struct StreamSink<T, U> {
+        #[pin]
+        stream: T,
+        #[pin]
+        sink: U,
+    }
 }
 
 impl<T, U> StreamSink<T, U> {
@@ -318,43 +360,54 @@ impl<T, U> StreamSink<T, U> {
 
 impl<T, U> Stream for StreamSink<T, U>
 where
-    T: Stream + Unpin,
-    U: Unpin,
+    T: Stream,
 {
     type Item = T::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.stream.poll_next_unpin(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        this.stream.poll_next(cx)
     }
 }
 
 impl<T, U, I> Sink<I> for StreamSink<T, U>
 where
-    T: Unpin,
-    U: Sink<I> + Unpin,
+    U: Sink<I>,
 {
     type Error = U::Error;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.sink.poll_ready_unpin(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.sink.poll_ready(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
-        self.sink.start_send_unpin(item)
+    fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.sink.start_send(item)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.sink.poll_flush_unpin(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.sink.poll_flush(cx)
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.sink.poll_close_unpin(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.sink.poll_close(cx)
     }
 }
 
-/// Helper struct.
-struct PacketMuxer<T> {
-    inner: T,
+pin_project_lite::pin_project! {
+    /// Helper struct.
+    struct PacketMuxer<T> {
+        #[pin]
+        inner: T,
+    }
 }
 
 impl<T> PacketMuxer<T> {
@@ -366,44 +419,57 @@ impl<T> PacketMuxer<T> {
 
 impl<T, I> Sink<I> for PacketMuxer<T>
 where
-    T: Sink<PacketMux> + Unpin,
+    T: Sink<PacketMux>,
     I: Into<PacketMux>,
 {
     type Error = T::Error;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready_unpin(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_ready(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
-        self.inner.start_send_unpin(item.into())
+    fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.inner.start_send(item.into())
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_flush_unpin(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_flush(cx)
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_close_unpin(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_close(cx)
     }
 }
 
-/// Future that will read and process all incoming RTCP packets.
-struct RtcpReceiver<T> {
-    context: RtcpContext,
-    stream: T,
+pin_project_lite::pin_project! {
+    /// Future that will read and process all incoming RTCP packets.
+    struct RtcpReceiver<T> {
+        #[pin]
+        stream: T,
+        context: RtcpContext,
+    }
 }
 
 impl<T, E> Future for RtcpReceiver<T>
 where
-    T: Stream<Item = Result<CompoundRtcpPacket, E>> + Unpin,
+    T: Stream<Item = Result<CompoundRtcpPacket, E>>,
 {
     type Output = Result<(), E>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        while let Poll::Ready(ready) = self.stream.poll_next_unpin(cx) {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+
+        while let Poll::Ready(ready) = this.stream.as_mut().poll_next(cx) {
             if let Some(packet) = ready.transpose()? {
-                self.context.process_incoming_rtcp_packet(&packet);
+                this.context.process_incoming_rtcp_packet(&packet);
             } else {
                 return Poll::Ready(Ok(()));
             }
@@ -413,15 +479,63 @@ where
     }
 }
 
-/// Future responsible for generating and sending RTCP packets.
-struct RtcpSender<T> {
+pin_project_lite::pin_project! {
+    /// Future responsible for generating and sending RTCP packets.
+    struct RtcpSender<T> {
+        #[pin]
+        sink: T,
+        context: RtcpSenderContext,
+    }
+}
+
+impl<T> Future for RtcpSender<T>
+where
+    T: Sink<CompoundRtcpPacket>,
+{
+    type Output = Result<(), T::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+
+        while let Poll::Ready(ready) = this.context.poll_next_packet(cx) {
+            if let Some(packet) = ready {
+                let poll = this.sink.as_mut().poll_ready(cx)?;
+
+                if poll.is_ready() {
+                    this.context.process_outgoing_rtcp_packet(&packet);
+                    this.sink.as_mut().start_send(packet)?;
+                } else {
+                    // save the packet for later
+                    this.context.push_back_packet(packet);
+
+                    // ... and return immediately
+                    return Poll::Pending;
+                }
+            } else {
+                return this.sink.poll_close(cx);
+            }
+        }
+
+        // make sure that we drive the sink forward
+        let _ = this.sink.poll_flush(cx);
+
+        Poll::Pending
+    }
+}
+
+/// RTCP sender context.
+struct RtcpSenderContext {
     context: RtcpContext,
-    sink: T,
     close_rx: Option<oneshot::Receiver<()>>,
     pending: Option<CompoundRtcpPacket>,
 }
 
-impl<T> RtcpSender<T> {
+impl RtcpSenderContext {
+    /// Process a given outgoing RTCP packet.
+    fn process_outgoing_rtcp_packet(&mut self, packet: &CompoundRtcpPacket) {
+        self.context.process_outgoing_rtcp_packet(packet);
+    }
+
     /// Poll the next RTCP packet.
     fn poll_next_packet(&mut self, cx: &mut Context) -> Poll<Option<CompoundRtcpPacket>> {
         if let Some(close_rx) = self.close_rx.as_mut() {
@@ -442,38 +556,13 @@ impl<T> RtcpSender<T> {
             Poll::Pending
         }
     }
-}
 
-impl<T> Future for RtcpSender<T>
-where
-    T: Sink<CompoundRtcpPacket> + Unpin,
-{
-    type Output = Result<(), T::Error>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        while let Poll::Ready(ready) = self.poll_next_packet(cx) {
-            if let Some(packet) = ready {
-                let poll = self.sink.poll_ready_unpin(cx)?;
-
-                if poll.is_ready() {
-                    self.context.process_outgoing_rtcp_packet(&packet);
-                    self.sink.start_send_unpin(packet)?;
-                } else {
-                    // save the packet for later
-                    self.pending = Some(packet);
-
-                    // ... and return immediately
-                    return Poll::Pending;
-                }
-            } else {
-                return self.sink.poll_close_unpin(cx);
-            }
-        }
-
-        // make sure that we drive the sink forward
-        let _ = self.sink.poll_flush_unpin(cx);
-
-        Poll::Pending
+    /// Push back a given packet that was not sent.
+    ///
+    /// The packet will be returned next time the `poll_next_packet` method is
+    /// called.
+    fn push_back_packet(&mut self, packet: CompoundRtcpPacket) {
+        self.pending = Some(packet);
     }
 }
 

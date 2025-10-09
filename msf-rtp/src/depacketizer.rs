@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::{Stream, StreamExt};
+use futures::Stream;
 
 use crate::RtpPacket;
 
@@ -157,11 +157,14 @@ where
     }
 }
 
-/// Media stream that uses an underlying depacketizer to convert RTP packets
-/// from the underlying RTP stream into media frames.
-pub struct MediaStream<S, D> {
-    rtp_stream: Option<S>,
-    depacketizer: D,
+pin_project_lite::pin_project! {
+    /// Media stream that uses an underlying depacketizer to convert RTP packets
+    /// from the underlying RTP stream into media frames.
+    pub struct MediaStream<S, D> {
+        #[pin]
+        rtp_stream: Option<S>,
+        depacketizer: D,
+    }
 }
 
 impl<S, D> MediaStream<S, D> {
@@ -177,23 +180,27 @@ impl<S, D> MediaStream<S, D> {
 
 impl<S, D, E> Stream for MediaStream<S, D>
 where
-    S: Stream<Item = Result<RtpPacket, E>> + Unpin,
-    D: Depacketizer + Unpin,
+    S: Stream<Item = Result<RtpPacket, E>>,
+    D: Depacketizer,
     E: From<D::Error>,
 {
     type Item = Result<D::Frame, E>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
         loop {
-            if let Some(frame) = self.depacketizer.take()? {
+            let rtp_stream = this.rtp_stream.as_mut();
+
+            if let Some(frame) = this.depacketizer.take()? {
                 return Poll::Ready(Some(Ok(frame)));
-            } else if let Some(stream) = self.rtp_stream.as_mut() {
-                if let Poll::Ready(ready) = stream.poll_next_unpin(cx) {
+            } else if let Some(stream) = rtp_stream.as_pin_mut() {
+                if let Poll::Ready(ready) = stream.poll_next(cx) {
                     if let Some(packet) = ready.transpose()? {
-                        self.depacketizer.push(packet)?;
+                        this.depacketizer.push(packet)?;
                     } else {
-                        self.depacketizer.flush()?;
-                        self.rtp_stream = None;
+                        this.depacketizer.flush()?;
+                        this.rtp_stream.set(None);
                     }
                 } else {
                     return Poll::Pending;

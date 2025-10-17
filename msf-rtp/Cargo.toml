@@ -20,6 +20,7 @@ pcm = ["msf-sdp"]
 [dependencies]
 bytes = "1"
 futures = "0.3"
+lru = "0.16"
 pin-project-lite = "0.2"
 
 [dependencies.msf-sdp]

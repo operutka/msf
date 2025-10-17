@@ -1,3 +1,5 @@
+use std::{borrow::Borrow, ops::Deref, time::Instant};
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::InvalidInput;
@@ -614,5 +616,57 @@ impl Default for RtpPacket {
     #[inline]
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// RTP packet wrapper containing also the instant when the packet was
+/// received.
+#[derive(Clone)]
+pub struct IncomingRtpPacket {
+    inner: RtpPacket,
+    received_at: Instant,
+}
+
+impl IncomingRtpPacket {
+    /// Create a new incoming RTP packet.
+    #[inline]
+    pub const fn new(packet: RtpPacket, received_at: Instant) -> Self {
+        Self { inner: packet, received_at }
+    }
+
+    /// Get the instant when the packet was received.
+    #[inline]
+    pub fn received_at(&self) -> Instant {
+        self.received_at
+    }
+}
+
+impl AsRef<RtpPacket> for IncomingRtpPacket {
+    #[inline]
+    fn as_ref(&self) -> &RtpPacket {
+        &self.inner
+    }
+}
+
+impl Borrow<RtpPacket> for IncomingRtpPacket {
+    #[inline]
+    fn borrow(&self) -> &RtpPacket {
+        &self.inner
+    }
+}
+
+impl Deref for IncomingRtpPacket {
+    type Target = RtpPacket;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<IncomingRtpPacket> for RtpPacket {
+    #[inline]
+    fn from(packet: IncomingRtpPacket) -> Self {
+        packet.inner
     }
 }

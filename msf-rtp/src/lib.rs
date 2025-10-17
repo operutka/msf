@@ -20,7 +20,7 @@ pub use self::{
     depacketizer::{Depacketizer, MediaStream},
     packetizer::{MediaSink, Packetizer},
     rtcp::{CompoundRtcpPacket, RtcpHeader, RtcpPacket, RtcpPacketType},
-    rtp::{RtpHeader, RtpHeaderExtension, RtpPacket},
+    rtp::{IncomingRtpPacket, RtpHeader, RtpHeaderExtension, RtpPacket},
 };
 
 /// Invalid input.

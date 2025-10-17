@@ -3,6 +3,7 @@
 mod bye;
 mod handler;
 mod report;
+mod stream;
 
 use std::ops::Deref;
 
@@ -14,6 +15,7 @@ pub use self::{
     bye::ByePacket,
     handler::{MuxedRtcpHandler, RtcpHandler},
     report::{ReceiverReport, ReportBlock, SenderReport},
+    stream::RtcpChannel,
 };
 
 /// Compound RTCP packet.

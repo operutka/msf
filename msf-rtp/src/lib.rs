@@ -6,6 +6,7 @@ mod rtp;
 pub mod depacketizer;
 pub mod packetizer;
 pub mod rtcp;
+pub mod stream;
 pub mod utils;
 
 #[cfg(feature = "h264")]

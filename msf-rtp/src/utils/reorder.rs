@@ -141,6 +141,7 @@ impl ReorderingBuffer {
     /// The method returns an error if the packet cannot be inserted into the
     /// buffer because it is either a duplicate or the buffer would exceed its
     /// capacity.
+    #[allow(clippy::result_large_err)]
     pub fn push(&mut self, packet: IncomingRtpPacket) -> Result<u64, ReorderingError> {
         self.inner
             .push(InputPacket::new(packet, 0))
@@ -154,9 +155,7 @@ impl ReorderingBuffer {
     /// it is an in-order packet and returning it would not skip any packets.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<OrderedRtpPacket> {
-        self.inner
-            .next()
-            .map(OrderedRtpPacket::from)
+        self.inner.next().map(OrderedRtpPacket::from)
     }
 
     /// Remove the front slot from the buffer and return the contained packet
@@ -166,9 +165,7 @@ impl ReorderingBuffer {
     /// by one even if the front slot is empty or if the underlying buffer
     /// itself is empty.
     pub fn take(&mut self) -> Option<OrderedRtpPacket> {
-        self.inner
-            .take()
-            .map(OrderedRtpPacket::from)
+        self.inner.take().map(OrderedRtpPacket::from)
     }
 
     /// Check if the buffer is empty.
@@ -238,6 +235,7 @@ impl ReorderingMultiBuffer {
     /// The method returns an error if the packet cannot be inserted into the
     /// buffer because it is either a duplicate or the buffer would exceed its
     /// capacity.
+    #[allow(clippy::result_large_err)]
     pub fn push(&mut self, packet: IncomingRtpPacket) -> Result<u64, ReorderingError> {
         // check if the oldest packet in the buffer is more than `capacity`
         // packets behind
@@ -251,7 +249,9 @@ impl ReorderingMultiBuffer {
             .sources
             .get_or_insert_mut(ssrc, || InternalBuffer::new(self.capacity));
 
-        let input_index = self.first_input_index.wrapping_add(self.input_index_to_ssrc.len());
+        let input_index = self
+            .first_input_index
+            .wrapping_add(self.input_index_to_ssrc.len());
 
         let output_index = source.push(InputPacket::new(packet, input_index))?;
 
@@ -283,6 +283,7 @@ impl ReorderingMultiBuffer {
     /// This method will return a packet only if it is in-order (i.e. no
     /// packets would be skipped for the corresponding SSRC) or if the
     /// corresponding SSRC has been dropped from the buffer.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<OrderedRtpPacket> {
         let packet = self.output.pop_front()?;
 
@@ -442,6 +443,7 @@ impl InternalBuffer {
     /// The method returns an error if the packet cannot be inserted into the
     /// buffer because it is either a duplicate or the buffer would exceed its
     /// capacity.
+    #[allow(clippy::result_large_err)]
     fn push(&mut self, packet: InputPacket) -> Result<u64, InternalError> {
         let index = self.estimate_index(packet.sequence_number());
 
@@ -528,7 +530,10 @@ struct InputPacket {
 impl InputPacket {
     /// Create a new input packet.
     fn new(packet: IncomingRtpPacket, input_index: usize) -> Self {
-        Self { input_index, packet }
+        Self {
+            input_index,
+            packet,
+        }
     }
 }
 
@@ -594,9 +599,7 @@ mod tests {
     use crate::rtp::{IncomingRtpPacket, RtpPacket};
 
     fn make_packet(seq: u16, ssrc: u32) -> IncomingRtpPacket {
-        let packet = RtpPacket::new()
-            .with_sequence_number(seq)
-            .with_ssrc(ssrc);
+        let packet = RtpPacket::new().with_sequence_number(seq).with_ssrc(ssrc);
 
         IncomingRtpPacket::new(packet, Instant::now())
     }
@@ -611,8 +614,14 @@ mod tests {
         assert_eq!(buffer.estimate_index(0x2000), 0x0000_0000_0000_2000);
         assert_eq!(buffer.estimate_index(0xf000), 0xffff_ffff_ffff_f000);
 
-        assert!(matches!(buffer.push(make_packet(0xf000, 1)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(0x2000, 1)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(0xf000, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(0x2000, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
 
         buffer = ReorderingBuffer::new(4);
 
@@ -622,8 +631,14 @@ mod tests {
         assert_eq!(buffer.estimate_index(0xf000), 0x0000_0000_0000_f000);
         assert_eq!(buffer.estimate_index(0x1000), 0x0000_0000_0001_1000);
 
-        assert!(matches!(buffer.push(make_packet(0xd000, 1)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(0x1000, 1)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(0xd000, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(0x1000, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
 
         buffer = ReorderingBuffer::new(4);
 
@@ -635,8 +650,14 @@ mod tests {
         assert_eq!(buffer.estimate_index(0xf000), 0xffff_ffff_ffff_f000);
         assert_eq!(buffer.estimate_index(0x1000), 0x0000_0000_0000_1000);
 
-        assert!(matches!(buffer.push(make_packet(0xf000, 1)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(0x1000, 1)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(0xf000, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(0x1000, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
     }
 
     #[test]
@@ -646,13 +667,25 @@ mod tests {
         assert!(buffer.is_empty());
 
         assert!(matches!(buffer.push(make_packet(2, 1)), Ok(2)));
-        assert!(matches!(buffer.push(make_packet(0, 1)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(1, 1)), Err(ReorderingError::DuplicatePacket(_))));
+        assert!(matches!(
+            buffer.push(make_packet(0, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(1, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
         assert!(matches!(buffer.push(make_packet(4, 1)), Ok(4)));
         assert!(matches!(buffer.push(make_packet(3, 1)), Ok(3)));
-        assert!(matches!(buffer.push(make_packet(3, 1)), Err(ReorderingError::DuplicatePacket(_))));
+        assert!(matches!(
+            buffer.push(make_packet(3, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
         assert!(matches!(buffer.push(make_packet(6, 1)), Ok(6)));
-        assert!(matches!(buffer.push(make_packet(7, 1)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(7, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
 
         assert!(!buffer.is_empty());
 
@@ -680,23 +713,50 @@ mod tests {
         assert!(buffer.is_empty());
 
         assert!(matches!(buffer.push(make_packet(2, 1)), Ok(2)));
-        assert!(matches!(buffer.push(make_packet(0, 1)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(1, 1)), Err(ReorderingError::DuplicatePacket(_))));
+        assert!(matches!(
+            buffer.push(make_packet(0, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(1, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
         assert!(matches!(buffer.push(make_packet(4, 1)), Ok(4)));
         assert!(matches!(buffer.push(make_packet(3, 1)), Ok(3)));
-        assert!(matches!(buffer.push(make_packet(3, 1)), Err(ReorderingError::DuplicatePacket(_))));
+        assert!(matches!(
+            buffer.push(make_packet(3, 1)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
         assert!(matches!(buffer.push(make_packet(6, 1)), Ok(6)));
-        assert!(matches!(buffer.push(make_packet(13, 1)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(13, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
 
         assert!(matches!(buffer.push(make_packet(10, 2)), Ok(10)));
-        assert!(matches!(buffer.push(make_packet(9, 2)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(8, 2)), Err(ReorderingError::DuplicatePacket(_))));
+        assert!(matches!(
+            buffer.push(make_packet(9, 2)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(8, 2)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
         assert!(matches!(buffer.push(make_packet(12, 2)), Ok(12)));
         assert!(matches!(buffer.push(make_packet(11, 2)), Ok(11)));
-        assert!(matches!(buffer.push(make_packet(11, 2)), Err(ReorderingError::DuplicatePacket(_))));
-        assert!(matches!(buffer.push(make_packet(21, 2)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(11, 2)),
+            Err(ReorderingError::DuplicatePacket(_))
+        ));
+        assert!(matches!(
+            buffer.push(make_packet(21, 2)),
+            Err(ReorderingError::BufferFull(_))
+        ));
         assert!(matches!(buffer.push(make_packet(14, 2)), Ok(14)));
-        assert!(matches!(buffer.push(make_packet(15, 2)), Err(ReorderingError::BufferFull(_))));
+        assert!(matches!(
+            buffer.push(make_packet(15, 2)),
+            Err(ReorderingError::BufferFull(_))
+        ));
 
         assert!(!buffer.is_empty());
 

@@ -72,7 +72,7 @@ impl RtpSenderOptions {
     where
         T: IntoIterator<Item = (u32, u32)>,
     {
-        self.output_ssrcs = Vec::from_iter(ssrcs.into_iter());
+        self.output_ssrcs = Vec::from_iter(ssrcs);
         self
     }
 }

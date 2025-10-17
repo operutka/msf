@@ -631,7 +631,10 @@ impl IncomingRtpPacket {
     /// Create a new incoming RTP packet.
     #[inline]
     pub const fn new(packet: RtpPacket, received_at: Instant) -> Self {
-        Self { inner: packet, received_at }
+        Self {
+            inner: packet,
+            received_at,
+        }
     }
 
     /// Get the instant when the packet was received.

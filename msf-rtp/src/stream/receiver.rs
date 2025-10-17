@@ -15,7 +15,7 @@ use crate::{
     rtcp::{ReceiverReport, ReportBlock, RtcpPacket, SenderReport},
     rtp::{IncomingRtpPacket, RtpPacket},
     stream::DurationExt,
-    utils::{OrderedRtpPacket, ReorderingMultiBuffer, ReorderingError},
+    utils::{OrderedRtpPacket, ReorderingError, ReorderingMultiBuffer},
 };
 
 /// RTP packet receiver.
@@ -140,7 +140,7 @@ impl RtpReceiverOptions {
     where
         T: IntoIterator<Item = (u32, u32)>,
     {
-        self.input_ssrcs = HashMap::from_iter(ssrcs.into_iter());
+        self.input_ssrcs = HashMap::from_iter(ssrcs);
         self
     }
 
@@ -207,7 +207,7 @@ where
                         this.inner.set(None);
                     }
                 }
-            } else  if let Some(packet) = this.context.take() {
+            } else if let Some(packet) = this.context.take() {
                 return Poll::Ready(Some(Ok(packet)));
             } else if let Some(err) = this.error.take() {
                 return Poll::Ready(Some(Err(err)));
@@ -245,9 +245,7 @@ impl RtpReceiverContext {
     fn new(options: RtpReceiverOptions) -> Self {
         let expected_ssrcs = options.input_ssrcs.len();
 
-        let max_input_ssrcs = options
-            .max_input_ssrcs
-            .map(|max| max.max(expected_ssrcs));
+        let max_input_ssrcs = options.max_input_ssrcs.map(|max| max.max(expected_ssrcs));
 
         let max_ssrc_buffers = match options.input_ssrc_mode {
             SSRCMode::Ignore => Some(1),
@@ -258,8 +256,7 @@ impl RtpReceiverContext {
         let buffer = ReorderingMultiBuffer::new(options.reordering_buffer_depth, max_ssrc_buffers);
 
         let stats = if let (SSRCMode::Any, Some(max)) = (options.input_ssrc_mode, max_input_ssrcs) {
-            let max = NonZeroUsize::new(max)
-                .unwrap_or(NonZeroUsize::MIN);
+            let max = NonZeroUsize::new(max).unwrap_or(NonZeroUsize::MIN);
 
             LruCache::new(max)
         } else {
@@ -296,8 +293,7 @@ impl RtpReceiverContext {
     fn push_incoming(&mut self, mut packet: IncomingRtpPacket) {
         let ssrc = packet.ssrc();
 
-        self.get_stats_mut(ssrc)
-            .process_incoming_packet(&packet);
+        self.get_stats_mut(ssrc).process_incoming_packet(&packet);
 
         // put the packet into the reordering buffer, skipping missing packets
         // if necessary
@@ -319,8 +315,7 @@ impl RtpReceiverContext {
     fn push_ordered(&mut self, packet: OrderedRtpPacket) {
         let ssrc = packet.ssrc();
 
-        self.get_stats_mut(ssrc)
-            .process_ordered_packet(&packet);
+        self.get_stats_mut(ssrc).process_ordered_packet(&packet);
 
         self.output.push_back(packet);
     }
@@ -410,9 +405,7 @@ impl RtpReceiverContext {
             }
         }
 
-        report
-            .with_report_blocks(report_blocks)
-            .encode()
+        report.with_report_blocks(report_blocks).encode()
     }
 
     /// Process a given sender report.

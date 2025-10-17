@@ -12,10 +12,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{ready, Sink, Stream};
 
-use crate::{
-    rtp::RtpPacket,
-    InvalidInput,
-};
+use crate::{rtp::RtpPacket, InvalidInput};
 
 pin_project_lite::pin_project! {
     /// RTP channel decoding/encoding RTP packets from/to byte frames.

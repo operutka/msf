@@ -27,11 +27,14 @@ pub struct ReportBlock {
 }
 
 impl ReportBlock {
+    /// Size of an encoded report block.
+    pub const RAW_SIZE: usize = std::mem::size_of::<RawReportBlock>();
+
     /// Create a new report block.
     #[inline]
-    pub const fn new() -> Self {
+    pub const fn new(ssrc: u32) -> Self {
         Self {
-            ssrc: 0,
+            ssrc,
             loss: 0,
             extended_sequence_number: 0,
             jitter: 0,
@@ -122,11 +125,26 @@ impl ReportBlock {
         let min = -(1i32 << 23);
         let max = (1i32 << 23) - 1;
 
-        let loss = loss.max(min).min(max) as u32;
+        let loss = loss.clamp(min, max) as u32;
 
         self.loss &= 0xff000000;
         self.loss |= loss & 0x00ffffff;
         self
+    }
+
+    /// Set loss calculated from a given number of expected packets vs. a given
+    /// number of received packets.
+    pub fn with_loss(self, expected: u64, received: u64) -> Self {
+        let delta = expected as i64 - received as i64;
+
+        let fraction = if delta < 0 {
+            0
+        } else {
+            ((delta as u64) << 8) / expected
+        };
+
+        self.with_fractional_loss(fraction as u8)
+            .with_cumulative_loss(delta as i32)
     }
 
     /// Get extended highest sequence number.
@@ -196,21 +214,14 @@ impl ReportBlock {
     /// Get size of the encoded report block.
     #[inline]
     pub fn raw_size(&self) -> usize {
-        std::mem::size_of::<RawReportBlock>()
-    }
-}
-
-impl Default for ReportBlock {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
+        Self::RAW_SIZE
     }
 }
 
 /// Helper struct.
 #[repr(C, packed)]
 struct RawSenderReportHeader {
-    ssrc: u32,
+    sender_ssrc: u32,
     ntp_timestamp: u64,
     rtp_timestamp: u32,
     packet_count: u32,
@@ -220,25 +231,25 @@ struct RawSenderReportHeader {
 /// Sender report.
 #[derive(Clone)]
 pub struct SenderReport {
-    ssrc: u32,
+    sender_ssrc: u32,
     ntp_timestamp: u64,
     rtp_timestamp: u32,
     packet_count: u32,
     octet_count: u32,
-    blocks: Vec<ReportBlock>,
+    report_blocks: Vec<ReportBlock>,
 }
 
 impl SenderReport {
     /// Create a new sender report.
     #[inline]
-    pub const fn new() -> Self {
+    pub const fn new(sender_ssrc: u32) -> Self {
         Self {
-            ssrc: 0,
+            sender_ssrc,
             ntp_timestamp: 0,
             rtp_timestamp: 0,
             packet_count: 0,
             octet_count: 0,
-            blocks: Vec::new(),
+            report_blocks: Vec::new(),
         }
     }
 
@@ -257,18 +268,18 @@ impl SenderReport {
         let raw = unsafe { ptr.read_unaligned() };
 
         let mut res = Self {
-            ssrc: u32::from_be(raw.ssrc),
+            sender_ssrc: u32::from_be(raw.sender_ssrc),
             ntp_timestamp: u64::from_be(raw.ntp_timestamp),
             rtp_timestamp: u32::from_be(raw.rtp_timestamp),
             packet_count: u32::from_be(raw.packet_count),
             octet_count: u32::from_be(raw.octet_count),
-            blocks: Vec::with_capacity(header.item_count() as usize),
+            report_blocks: Vec::with_capacity(header.item_count() as usize),
         };
 
         data.advance(std::mem::size_of::<RawSenderReportHeader>());
 
         for _ in 0..header.item_count() {
-            res.blocks.push(ReportBlock::decode(&mut data)?);
+            res.report_blocks.push(ReportBlock::decode(&mut data)?);
         }
 
         Ok(res)
@@ -279,7 +290,7 @@ impl SenderReport {
         let mut payload = BytesMut::with_capacity(self.raw_size());
 
         let raw = RawSenderReportHeader {
-            ssrc: self.ssrc.to_be(),
+            sender_ssrc: self.sender_ssrc.to_be(),
             ntp_timestamp: self.ntp_timestamp.to_be(),
             rtp_timestamp: self.rtp_timestamp.to_be(),
             packet_count: self.packet_count.to_be(),
@@ -294,25 +305,25 @@ impl SenderReport {
 
         payload.extend_from_slice(data);
 
-        for block in &self.blocks {
+        for block in &self.report_blocks {
             block.encode(&mut payload);
         }
 
         RtcpPacket::new(RtcpPacketType::SR)
-            .with_item_count(self.blocks.len() as u8)
+            .with_item_count(self.report_blocks.len() as u8)
             .with_payload(payload.freeze(), 0)
     }
 
     /// Get SSRC identifier of the sender.
     #[inline]
-    pub fn ssrc(&self) -> u32 {
-        self.ssrc
+    pub fn sender_ssrc(&self) -> u32 {
+        self.sender_ssrc
     }
 
     /// Set the SSRC identifier of the sender.
     #[inline]
-    pub fn with_ssrc(mut self, ssrc: u32) -> Self {
-        self.ssrc = ssrc;
+    pub fn with_sender_ssrc(mut self, ssrc: u32) -> Self {
+        self.sender_ssrc = ssrc;
         self
     }
 
@@ -371,7 +382,7 @@ impl SenderReport {
     /// Get report blocks.
     #[inline]
     pub fn report_blocks(&self) -> &[ReportBlock] {
-        &self.blocks
+        &self.report_blocks
     }
 
     /// Set the report blocks.
@@ -388,7 +399,7 @@ impl SenderReport {
 
         assert!(blocks.len() < 32);
 
-        self.blocks = blocks;
+        self.report_blocks = blocks;
         self
     }
 
@@ -396,31 +407,24 @@ impl SenderReport {
     #[inline]
     pub fn raw_size(&self) -> usize {
         std::mem::size_of::<RawSenderReportHeader>()
-            + std::mem::size_of::<RawReportBlock>() * self.blocks.len()
-    }
-}
-
-impl Default for SenderReport {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
+            + std::mem::size_of::<RawReportBlock>() * self.report_blocks.len()
     }
 }
 
 /// Receiver report.
 #[derive(Clone)]
 pub struct ReceiverReport {
-    ssrc: u32,
-    blocks: Vec<ReportBlock>,
+    sender_ssrc: u32,
+    report_blocks: Vec<ReportBlock>,
 }
 
 impl ReceiverReport {
     /// Create a new receiver report.
     #[inline]
-    pub const fn new() -> Self {
+    pub const fn new(sender_ssrc: u32) -> Self {
         Self {
-            ssrc: 0,
-            blocks: Vec::new(),
+            sender_ssrc,
+            report_blocks: Vec::new(),
         }
     }
 
@@ -435,12 +439,12 @@ impl ReceiverReport {
         }
 
         let mut res = Self {
-            ssrc: data.get_u32(),
-            blocks: Vec::with_capacity(header.item_count() as usize),
+            sender_ssrc: data.get_u32(),
+            report_blocks: Vec::with_capacity(header.item_count() as usize),
         };
 
         for _ in 0..header.item_count() {
-            res.blocks.push(ReportBlock::decode(&mut data)?);
+            res.report_blocks.push(ReportBlock::decode(&mut data)?);
         }
 
         Ok(res)
@@ -450,34 +454,34 @@ impl ReceiverReport {
     pub fn encode(&self) -> RtcpPacket {
         let mut payload = BytesMut::with_capacity(self.raw_size());
 
-        payload.put_u32(self.ssrc);
+        payload.put_u32(self.sender_ssrc);
 
-        for block in &self.blocks {
+        for block in &self.report_blocks {
             block.encode(&mut payload);
         }
 
         RtcpPacket::new(RtcpPacketType::RR)
-            .with_item_count(self.blocks.len() as u8)
+            .with_item_count(self.report_blocks.len() as u8)
             .with_payload(payload.freeze(), 0)
     }
 
     /// Get SSRC identifier of the sender.
     #[inline]
-    pub fn ssrc(&self) -> u32 {
-        self.ssrc
+    pub fn sender_ssrc(&self) -> u32 {
+        self.sender_ssrc
     }
 
     /// Set the SSRC identifier of the sender.
     #[inline]
-    pub fn with_ssrc(mut self, ssrc: u32) -> Self {
-        self.ssrc = ssrc;
+    pub fn with_sender_ssrc(mut self, ssrc: u32) -> Self {
+        self.sender_ssrc = ssrc;
         self
     }
 
     /// Get report blocks.
     #[inline]
     pub fn report_blocks(&self) -> &[ReportBlock] {
-        &self.blocks
+        &self.report_blocks
     }
 
     /// Set the report blocks.
@@ -494,20 +498,13 @@ impl ReceiverReport {
 
         assert!(blocks.len() < 32);
 
-        self.blocks = blocks;
+        self.report_blocks = blocks;
         self
     }
 
     /// Get size of the encoded sender report.
     #[inline]
     pub fn raw_size(&self) -> usize {
-        4 + std::mem::size_of::<RawReportBlock>() * self.blocks.len()
-    }
-}
-
-impl Default for ReceiverReport {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
+        4 + std::mem::size_of::<RawReportBlock>() * self.report_blocks.len()
     }
 }

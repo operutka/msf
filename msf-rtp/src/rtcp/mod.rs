@@ -4,6 +4,7 @@ mod bye;
 mod channel;
 mod handler;
 mod report;
+mod sdes;
 
 use std::ops::Deref;
 
@@ -16,6 +17,7 @@ pub use self::{
     channel::RtcpChannel,
     handler::{MuxedRtcpHandler, RtcpHandler},
     report::{ReceiverReport, ReportBlock, SenderReport},
+    sdes::{SourceDescription, SourceDescriptionPacket},
 };
 
 /// Compound RTCP packet.

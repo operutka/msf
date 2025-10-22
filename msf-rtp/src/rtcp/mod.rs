@@ -18,7 +18,7 @@ pub use self::{
     bye::ByePacket,
     channel::RtcpChannel,
     context::{RtcpContext, RtcpContextHandle},
-    handler::{MuxedRtcpHandler, RtcpHandler},
+    handler::{MuxedRtcpHandler, RtcpHandler, RtcpHandlerOptions},
     report::{ReceiverReport, ReportBlock, SenderReport},
     sdes::{SourceDescription, SourceDescriptionPacket},
 };

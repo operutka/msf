@@ -1,17 +1,81 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 
-use futures::{
-    channel::{mpsc, oneshot},
-    ready, FutureExt, Sink, SinkExt, Stream, StreamExt,
+use futures::{channel::mpsc, ready, FutureExt, Sink, SinkExt, Stream, StreamExt};
+use tokio::{
+    task::JoinHandle,
+    time::{Interval, MissedTickBehavior},
 };
-use tokio::task::JoinHandle;
 
-use crate::{CompoundRtcpPacket, PacketMux, RtpPacket};
+use crate::{
+    rtcp::{ByePacket, ReceiverReport, RtcpContextHandle, RtcpPacketType, SenderReport},
+    transceiver::RtpTransceiver,
+    CompoundRtcpPacket, InvalidInput, PacketMux, RtpPacket,
+};
+
+/// RTCP handler options.
+#[derive(Copy, Clone)]
+pub struct RtcpHandlerOptions {
+    rtcp_report_interval: Duration,
+    ignore_decoding_errors: bool,
+}
+
+impl RtcpHandlerOptions {
+    /// Create new RTCP handler options with default values.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            rtcp_report_interval: Duration::from_secs(5),
+            ignore_decoding_errors: true,
+        }
+    }
+
+    /// Get the RTCP report interval.
+    #[inline]
+    pub const fn rtcp_report_interval(&self) -> Duration {
+        self.rtcp_report_interval
+    }
+
+    /// Set the RTCP report interval.
+    ///
+    /// RTCP reports will be generated every `interval` seconds. The default
+    /// value is 5 seconds.
+    #[inline]
+    pub const fn with_rtcp_report_interval(mut self, interval: Duration) -> Self {
+        self.rtcp_report_interval = interval;
+        self
+    }
+
+    /// Check if RTCP decoding errors should be ignored.
+    #[inline]
+    pub const fn ignore_decoding_errors(&self) -> bool {
+        self.ignore_decoding_errors
+    }
+
+    /// Set whether RTCP decoding errors should be ignored.
+    ///
+    /// If true, decoding errors will be ignored and the invalid packets
+    /// will be silently dropped. If false, the RTCP handler will stop
+    /// processing incoming RTCP packets on the first decoding error. The
+    /// default value is true.
+    #[inline]
+    pub const fn with_ignore_decoding_errors(mut self, ignore: bool) -> Self {
+        self.ignore_decoding_errors = ignore;
+        self
+    }
+}
+
+impl Default for RtcpHandlerOptions {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pin_project_lite::pin_project! {
     /// RTCP protocol handler.
@@ -29,42 +93,63 @@ pin_project_lite::pin_project! {
 
 impl<T> RtcpHandler<T> {
     /// Create a new RTCP handler.
-    pub fn new<U, E>(rtp: T, rtcp: U) -> Self
+    ///
+    /// The handler will use the RTCP context provided by the RTP transceiver.
+    pub fn new<U, E>(rtp: T, rtcp: U, options: RtcpHandlerOptions) -> Self
+    where
+        T: RtpTransceiver,
+        U: Send + 'static,
+        U: Stream<Item = Result<CompoundRtcpPacket, E>>,
+        U: Sink<CompoundRtcpPacket>,
+    {
+        let rtcp_context = rtp.rtcp_context();
+
+        Self::new_with_rtcp_context(rtp, rtcp, rtcp_context, options)
+    }
+
+    /// Create a new RTCP handler with a given RTCP context.
+    pub fn new_with_rtcp_context<U, E>(
+        rtp: T,
+        rtcp: U,
+        rtcp_context: RtcpContextHandle,
+        options: RtcpHandlerOptions,
+    ) -> Self
     where
         U: Send + 'static,
         U: Stream<Item = Result<CompoundRtcpPacket, E>>,
         U: Sink<CompoundRtcpPacket>,
     {
-        let context = RtcpContext::new();
-
         let (rtcp_tx, rtcp_rx) = rtcp.split();
 
-        let (close_tx, close_rx) = oneshot::channel();
+        let sender = send_rtcp_reports(
+            rtcp_tx,
+            rtcp_context.clone(),
+            options.rtcp_report_interval(),
+        );
 
-        let sender = RtcpSender {
-            sink: rtcp_tx,
-            context: RtcpSenderContext {
-                context: context.clone(),
-                close_rx: Some(close_rx),
-                pending: None,
-            },
-        };
+        // NOTE: This task will run as long as the RtcpContext is generating
+        //   RTCP reports. It stops when the context is closed. Therefore, we
+        //   close the context when the handler is dropped.
+        tokio::spawn(async move {
+            let _ = sender.await;
+        });
 
-        let receiver = RtcpReceiver {
-            context: context.clone(),
-            stream: rtcp_rx,
-        };
+        let receiver = RtcpReceiver::new(
+            rtcp_rx,
+            rtcp_context.clone(),
+            options.ignore_decoding_errors(),
+        );
 
-        tokio::spawn(async move { sender.await.unwrap_or_default() });
-
-        let receiver = tokio::spawn(async move { receiver.await.unwrap_or_default() });
+        // NOTE: This task will be terminated when the handler is dropped.
+        let receiver = tokio::spawn(async move {
+            let _ = receiver.await;
+        });
 
         Self {
             stream: rtp,
             context: RtcpHandlerContext {
-                context,
+                context: rtcp_context,
                 receiver,
-                sender: Some(close_tx),
             },
         }
     }
@@ -80,17 +165,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
 
-        if let Poll::Ready(ready) = this.stream.poll_next(cx) {
-            if let Some(packet) = ready.transpose()? {
-                this.context.process_incoming_rtp_packet(&packet);
-
-                Poll::Ready(Some(Ok(packet)))
-            } else {
-                Poll::Ready(None)
-            }
-        } else {
-            Poll::Pending
-        }
+        this.stream.poll_next(cx)
     }
 }
 
@@ -110,8 +185,6 @@ where
     #[inline]
     fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
         let this = self.project();
-
-        this.context.process_outgoing_rtp_packet(&packet);
 
         this.stream.start_send(packet)
     }
@@ -133,32 +206,17 @@ where
 
 /// RTCP handler context.
 struct RtcpHandlerContext {
-    context: RtcpContext,
+    context: RtcpContextHandle,
     receiver: JoinHandle<()>,
-    sender: Option<oneshot::Sender<()>>,
-}
-
-impl RtcpHandlerContext {
-    /// Process a given incoming RTP packet.
-    fn process_incoming_rtp_packet(&mut self, packet: &RtpPacket) {
-        self.context.process_incoming_rtp_packet(packet);
-    }
-
-    /// Process a given outgoing RTP packet.
-    fn process_outgoing_rtp_packet(&mut self, packet: &RtpPacket) {
-        self.context.process_outgoing_rtp_packet(packet);
-    }
 }
 
 impl Drop for RtcpHandlerContext {
     fn drop(&mut self) {
+        // generate final RTCP reports including BYE packets
+        self.context.close();
+
         // stop the RTCP receiver
         self.receiver.abort();
-
-        // shutdown the RTCP sender
-        if let Some(close_tx) = self.sender.take() {
-            let _ = close_tx.send(());
-        }
     }
 }
 
@@ -186,18 +244,21 @@ pub struct MuxedRtcpHandler<E> {
 
 impl<E> MuxedRtcpHandler<E> {
     /// Create a new RTCP handler.
-    pub fn new<T>(stream: T) -> Self
+    pub fn new<T>(stream: T, options: RtcpHandlerOptions) -> Self
     where
         T: Send + 'static,
         T: Stream<Item = Result<PacketMux, E>>,
         T: Sink<PacketMux, Error = E>,
+        T: RtpTransceiver,
         E: Send + 'static,
     {
-        let (mut muxed_tx, mut muxed_rx) = stream.split();
+        let rtcp_context = stream.rtcp_context();
 
-        let (mut input_rtp_tx, input_rtp_rx) = mpsc::channel(4);
+        let (muxed_tx, mut muxed_rx) = stream.split();
+
+        let (mut input_rtp_tx, input_rtp_rx) = mpsc::channel::<Result<_, E>>(4);
         let (output_rtp_tx, output_rtp_rx) = mpsc::channel(4);
-        let (mut input_rtcp_tx, input_rtcp_rx) = mpsc::channel(4);
+        let (mut input_rtcp_tx, input_rtcp_rx) = mpsc::channel::<Result<_, E>>(4);
         let (output_rtcp_tx, output_rtcp_rx) = mpsc::channel(4);
 
         let output_rtp_tx = PacketMuxer::new(output_rtp_tx);
@@ -206,41 +267,36 @@ impl<E> MuxedRtcpHandler<E> {
         let rtp = StreamSink::new(input_rtp_rx, output_rtp_tx);
         let rtcp = StreamSink::new(input_rtcp_rx, output_rtcp_tx);
 
+        // NOTE: This task will be terminated when the handler is dropped.
         let reader = tokio::spawn(async move {
-            while let Some(item) = muxed_rx.next().await {
-                match item {
-                    Ok(PacketMux::Rtp(packet)) => {
-                        input_rtp_tx.send(Ok(packet)).await.unwrap_or_default();
-                    }
-                    Ok(PacketMux::Rtcp(packet)) => {
-                        input_rtcp_tx
-                            .send(Ok(packet) as Result<_, E>)
-                            .await
-                            .unwrap_or_default();
-                    }
-                    Err(err) => {
-                        // forward the error into the RTP channel
-                        input_rtp_tx.send(Err(err)).await.unwrap_or_default();
+            let mut run = true;
 
-                        // ... and stop the reader
-                        break;
-                    }
-                }
+            while run {
+                let next = muxed_rx.next().await;
+
+                run = matches!(next, Some(Ok(_)));
+
+                let _ = match next {
+                    Some(Ok(PacketMux::Rtp(packet))) => input_rtp_tx.send(Ok(packet)).await,
+                    Some(Ok(PacketMux::Rtcp(packet))) => input_rtcp_tx.send(Ok(packet)).await,
+                    Some(Err(err)) => input_rtp_tx.send(Err(err)).await,
+                    _ => Ok(()),
+                };
             }
         });
 
+        // NOTE: This task will run as long as the `output_rtp_rx` and
+        //   `output_rtcp_rx` are open. These channels will be closed when the
+        //   inner handler is dropped.
         let writer = tokio::spawn(async move {
-            let mut stream = futures::stream::select(output_rtp_rx, output_rtcp_rx);
-
-            while let Some(item) = stream.next().await {
-                muxed_tx.send(item).await?;
-            }
-
-            Ok(()) as Result<(), T::Error>
+            futures::stream::select(output_rtp_rx, output_rtcp_rx)
+                .map(Ok)
+                .forward(muxed_tx)
+                .await
         });
 
         Self {
-            inner: RtcpHandler::new(rtp, rtcp),
+            inner: RtcpHandler::new_with_rtcp_context(rtp, rtcp, rtcp_context, options),
             reader,
             writer,
             sink_error: false,
@@ -454,7 +510,19 @@ pin_project_lite::pin_project! {
     struct RtcpReceiver<T> {
         #[pin]
         stream: T,
-        context: RtcpContext,
+        context: RtcpReceiverContext,
+        ignore_decoding_errors: bool,
+    }
+}
+
+impl<T> RtcpReceiver<T> {
+    /// Create a new RTCP receiver.
+    fn new(stream: T, context: RtcpContextHandle, ignore_decoding_errors: bool) -> Self {
+        Self {
+            stream,
+            context: RtcpReceiverContext::new(context),
+            ignore_decoding_errors,
+        }
     }
 }
 
@@ -462,183 +530,140 @@ impl<T, E> Future for RtcpReceiver<T>
 where
     T: Stream<Item = Result<CompoundRtcpPacket, E>>,
 {
-    type Output = Result<(), E>;
+    type Output = Result<(), RtcpReceiverError<E>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
 
-        while let Poll::Ready(ready) = this.stream.as_mut().poll_next(cx) {
-            if let Some(packet) = ready.transpose()? {
-                this.context.process_incoming_rtcp_packet(&packet);
-            } else {
-                return Poll::Ready(Ok(()));
+        loop {
+            let stream = this.stream.as_mut();
+
+            match ready!(stream.poll_next(cx)) {
+                Some(Ok(packet)) => {
+                    if let Err(err) = this.context.process_incoming_rtcp_packet(&packet) {
+                        if !*this.ignore_decoding_errors {
+                            return Poll::Ready(Err(err.into()));
+                        }
+                    }
+                }
+                Some(Err(err)) => return Poll::Ready(Err(RtcpReceiverError::Other(err))),
+                None => return Poll::Ready(Ok(())),
+            }
+        }
+    }
+}
+
+/// RTCP receiver context.
+struct RtcpReceiverContext {
+    context: RtcpContextHandle,
+}
+
+impl RtcpReceiverContext {
+    /// Create a new RTCP receiver context.
+    fn new(context: RtcpContextHandle) -> Self {
+        Self { context }
+    }
+
+    /// Process a given incoming RTCP packet.
+    fn process_incoming_rtcp_packet(
+        &mut self,
+        packet: &CompoundRtcpPacket,
+    ) -> Result<(), InvalidInput> {
+        for packet in packet.iter() {
+            match packet.packet_type() {
+                RtcpPacketType::SR => {
+                    self.context
+                        .process_incoming_sender_report(&SenderReport::decode(packet)?);
+                }
+                RtcpPacketType::RR => {
+                    self.context
+                        .process_incoming_receiver_report(&ReceiverReport::decode(packet)?);
+                }
+                RtcpPacketType::BYE => {
+                    self.context
+                        .process_incoming_bye_packet(&ByePacket::decode(packet)?);
+                }
+                _ => (),
             }
         }
 
-        Poll::Pending
+        Ok(())
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Future responsible for generating and sending RTCP packets.
-    struct RtcpSender<T> {
-        #[pin]
-        sink: T,
-        context: RtcpSenderContext,
+/// Internal RTCP receiver error.
+enum RtcpReceiverError<E> {
+    InvalidInput,
+    Other(E),
+}
+
+impl<E> From<InvalidInput> for RtcpReceiverError<E> {
+    fn from(_: InvalidInput) -> Self {
+        Self::InvalidInput
     }
 }
 
-impl<T> Future for RtcpSender<T>
+/// Generate and send RTCP reports at regular intervals.
+///
+/// The returned future completes once there are no more RTCP reports to send
+/// and the sink has been flushed and closed.
+async fn send_rtcp_reports<T>(
+    sink: T,
+    context: RtcpContextHandle,
+    rtcp_report_interval: Duration,
+) -> Result<(), T::Error>
 where
     T: Sink<CompoundRtcpPacket>,
 {
-    type Output = Result<(), T::Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
-
-        while let Poll::Ready(ready) = this.context.poll_next_packet(cx) {
-            if let Some(packet) = ready {
-                let poll = this.sink.as_mut().poll_ready(cx)?;
-
-                if poll.is_ready() {
-                    this.context.process_outgoing_rtcp_packet(&packet);
-                    this.sink.as_mut().start_send(packet)?;
-                } else {
-                    // save the packet for later
-                    this.context.push_back_packet(packet);
-
-                    // ... and return immediately
-                    return Poll::Pending;
-                }
-            } else {
-                return this.sink.poll_close(cx);
-            }
-        }
-
-        // make sure that we drive the sink forward
-        let _ = this.sink.poll_flush(cx);
-
-        Poll::Pending
-    }
+    RtcpOutputStream::new(context, rtcp_report_interval)
+        .map(Ok)
+        .forward(sink)
+        .await
 }
 
-/// RTCP sender context.
-struct RtcpSenderContext {
-    context: RtcpContext,
-    close_rx: Option<oneshot::Receiver<()>>,
-    pending: Option<CompoundRtcpPacket>,
+/// Stream of outgoing RTCP packets.
+struct RtcpOutputStream {
+    interval: Interval,
+    context: RtcpContextHandle,
+    output: VecDeque<CompoundRtcpPacket>,
 }
 
-impl RtcpSenderContext {
-    /// Process a given outgoing RTCP packet.
-    fn process_outgoing_rtcp_packet(&mut self, packet: &CompoundRtcpPacket) {
-        self.context.process_outgoing_rtcp_packet(packet);
-    }
+impl RtcpOutputStream {
+    /// Create a new stream that will generate RTCP reports at regular
+    /// intervals.
+    fn new(context: RtcpContextHandle, rtcp_report_interval: Duration) -> Self {
+        let start = Instant::now() + (rtcp_report_interval / 2);
 
-    /// Poll the next RTCP packet.
-    fn poll_next_packet(&mut self, cx: &mut Context) -> Poll<Option<CompoundRtcpPacket>> {
-        if let Some(close_rx) = self.close_rx.as_mut() {
-            if close_rx.poll_unpin(cx).is_ready() {
-                // TODO
-                // self.pending = Some(BYE);
-                self.close_rx = None;
-            }
-        }
+        let mut interval = tokio::time::interval_at(start.into(), rtcp_report_interval);
 
-        if let Some(packet) = self.pending.take() {
-            Poll::Ready(Some(packet))
-        } else if self.close_rx.is_none() {
-            Poll::Ready(None)
-        } else {
-            // TODO
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            Poll::Pending
-        }
-    }
-
-    /// Push back a given packet that was not sent.
-    ///
-    /// The packet will be returned next time the `poll_next_packet` method is
-    /// called.
-    fn push_back_packet(&mut self, packet: CompoundRtcpPacket) {
-        self.pending = Some(packet);
-    }
-}
-
-/// RTCP context.
-#[derive(Clone)]
-struct RtcpContext {
-    inner: Arc<Mutex<InnerRtcpContext>>,
-}
-
-impl RtcpContext {
-    /// Create a new RTCP context.
-    fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(InnerRtcpContext::new())),
+            interval,
+            context,
+            output: VecDeque::new(),
         }
-    }
-
-    /// Process a given incoming RTP packet.
-    fn process_incoming_rtp_packet(&mut self, packet: &RtpPacket) {
-        self.inner
-            .lock()
-            .unwrap()
-            .process_incoming_rtp_packet(packet);
-    }
-
-    /// Process a given incoming RTCP packet.
-    fn process_incoming_rtcp_packet(&mut self, packet: &CompoundRtcpPacket) {
-        self.inner
-            .lock()
-            .unwrap()
-            .process_incoming_rtcp_packet(packet);
-    }
-
-    /// Process a given outgoing RTP packet.
-    fn process_outgoing_rtp_packet(&mut self, packet: &RtpPacket) {
-        self.inner
-            .lock()
-            .unwrap()
-            .process_outgoing_rtp_packet(packet);
-    }
-
-    /// Process a given outgoing RTCP packet.
-    fn process_outgoing_rtcp_packet(&mut self, packet: &CompoundRtcpPacket) {
-        self.inner
-            .lock()
-            .unwrap()
-            .process_outgoing_rtcp_packet(packet);
     }
 }
 
-/// Inner context.
-struct InnerRtcpContext {}
+impl Stream for RtcpOutputStream {
+    type Item = CompoundRtcpPacket;
 
-impl InnerRtcpContext {
-    /// Create a new context.
-    fn new() -> Self {
-        Self {}
-    }
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            if let Some(packet) = self.output.pop_front() {
+                return Poll::Ready(Some(packet));
+            }
 
-    /// Process a given incoming RTP packet.
-    fn process_incoming_rtp_packet(&mut self, _: &RtpPacket) {
-        // TODO
-    }
+            ready!(self.interval.poll_tick(cx));
 
-    /// Process a given incoming RTCP packet.
-    fn process_incoming_rtcp_packet(&mut self, _: &CompoundRtcpPacket) {
-        // TODO
-    }
+            let packets = self.context.create_rtcp_reports();
 
-    /// Process a given outgoing RTP packet.
-    fn process_outgoing_rtp_packet(&mut self, _: &RtpPacket) {
-        // TODO
-    }
+            if packets.is_empty() {
+                return Poll::Ready(None);
+            }
 
-    /// Process a given outgoing RTCP packet.
-    fn process_outgoing_rtcp_packet(&mut self, _: &CompoundRtcpPacket) {
-        // TODO
+            self.output.extend(packets);
+        }
     }
 }

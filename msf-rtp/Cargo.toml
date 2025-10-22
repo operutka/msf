@@ -36,4 +36,4 @@ path = "../msf-util"
 
 [dependencies.tokio]
 version = "1"
-features = ["rt"]
+features = ["rt", "time"]

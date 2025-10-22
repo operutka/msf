@@ -1,12 +1,6 @@
-//! RTP streaming utilities.
-
-pub mod receiver;
-pub mod sender;
-
 use std::{
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -113,24 +107,5 @@ where
         ready!(this.inner.poll_close(cx))?;
 
         Poll::Ready(Ok(()))
-    }
-}
-
-/// Helper trait.
-trait DurationExt {
-    /// Convert duration to RTP time with given clock rate.
-    fn to_rtp_time(&self, clock_rate: u32) -> u32;
-}
-
-impl DurationExt for Duration {
-    fn to_rtp_time(&self, clock_rate: u32) -> u32 {
-        let secs = self.as_secs();
-        let subs = self.subsec_nanos();
-
-        let rtp_secs = secs.wrapping_mul(clock_rate as u64);
-
-        let rtp_subs = (subs as u64) * (clock_rate as u64) / 1_000_000_000u64;
-
-        (rtp_secs.wrapping_add(rtp_subs)) as u32
     }
 }

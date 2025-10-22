@@ -1,9 +1,9 @@
 //! RTCP types.
 
 mod bye;
+mod channel;
 mod handler;
 mod report;
-mod stream;
 
 use std::ops::Deref;
 
@@ -13,9 +13,9 @@ use crate::InvalidInput;
 
 pub use self::{
     bye::ByePacket,
+    channel::RtcpChannel,
     handler::{MuxedRtcpHandler, RtcpHandler},
     report::{ReceiverReport, ReportBlock, SenderReport},
-    stream::RtcpChannel,
 };
 
 /// Compound RTCP packet.

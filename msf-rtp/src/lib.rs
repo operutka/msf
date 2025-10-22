@@ -1,12 +1,12 @@
 //! RTP packet serialization/de-serialization + utilities as defined in RFC
 //! 3550.
 
+mod channel;
 mod rtp;
 
 pub mod depacketizer;
 pub mod packetizer;
 pub mod rtcp;
-pub mod stream;
 pub mod utils;
 
 #[cfg(feature = "h264")]
@@ -18,6 +18,7 @@ pub mod pcm;
 use std::fmt::{self, Display, Formatter};
 
 pub use self::{
+    channel::RtpChannel,
     depacketizer::{Depacketizer, MediaStream},
     packetizer::{MediaSink, Packetizer},
     rtcp::{CompoundRtcpPacket, RtcpHeader, RtcpPacket, RtcpPacketType},

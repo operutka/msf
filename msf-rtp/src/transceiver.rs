@@ -76,6 +76,12 @@ impl SSRC2ClockRate {
         self.inner.len()
     }
 
+    /// Check if the mapping is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     /// Get the clock rate for a given SSRC.
     #[inline]
     pub fn clock_rate(&self, ssrc: u32) -> Option<u32> {
@@ -394,12 +400,11 @@ where
 {
     type Error = T::Error;
 
+    #[inline]
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        ready!(this.inner.poll_ready(cx))?;
-
-        Poll::Ready(Ok(()))
+        this.inner.poll_ready(cx)
     }
 
     fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
@@ -412,12 +417,11 @@ where
         Ok(())
     }
 
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        ready!(this.inner.poll_flush(cx))?;
-
-        Poll::Ready(Ok(()))
+        this.inner.poll_flush(cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -432,6 +436,7 @@ where
 }
 
 impl<T, E> RtpTransceiver for DefaultRtpTransceiver<T, E> {
+    #[inline]
     fn rtcp_context(&self) -> RtcpContextHandle {
         self.context.rtcp_context()
     }
@@ -555,6 +560,7 @@ impl TransceiverContext {
     }
 
     /// Get the transceiver's RTCP context handle.
+    #[inline]
     fn rtcp_context(&self) -> RtcpContextHandle {
         self.rtcp.handle()
     }

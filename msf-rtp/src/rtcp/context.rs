@@ -104,6 +104,7 @@ impl RtcpContext {
 }
 
 impl Drop for RtcpContext {
+    #[inline]
     fn drop(&mut self) {
         self.close();
     }

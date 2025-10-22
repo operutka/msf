@@ -73,12 +73,11 @@ where
 {
     type Error = T::Error;
 
+    #[inline]
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        ready!(this.inner.poll_ready(cx))?;
-
-        Poll::Ready(Ok(()))
+        this.inner.poll_ready(cx)
     }
 
     fn start_send(self: Pin<&mut Self>, item: RtpPacket) -> Result<(), Self::Error> {
@@ -93,19 +92,17 @@ where
         Ok(())
     }
 
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        ready!(this.inner.poll_flush(cx))?;
-
-        Poll::Ready(Ok(()))
+        this.inner.poll_flush(cx)
     }
 
+    #[inline]
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        ready!(this.inner.poll_close(cx))?;
-
-        Poll::Ready(Ok(()))
+        this.inner.poll_close(cx)
     }
 }

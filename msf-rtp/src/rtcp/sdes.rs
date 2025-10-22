@@ -96,3 +96,10 @@ impl SourceDescriptionPacket {
         self.chunks.iter().map(|chunk| chunk.raw_size()).sum()
     }
 }
+
+impl Default for SourceDescriptionPacket {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}

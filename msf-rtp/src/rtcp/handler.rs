@@ -332,7 +332,6 @@ impl<E> Stream for MuxedRtcpHandler<E> {
 impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
     type Error = E;
 
-    #[inline]
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         loop {
             if self.sink_error {
@@ -349,7 +348,6 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
         }
     }
 
-    #[inline]
     fn start_send(mut self: Pin<&mut Self>, item: RtpPacket) -> Result<(), Self::Error> {
         let res = self.inner.start_send_unpin(item);
 
@@ -362,7 +360,6 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
         Ok(())
     }
 
-    #[inline]
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         loop {
             if self.sink_error {
@@ -379,7 +376,6 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
         }
     }
 
-    #[inline]
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         loop {
             if self.sink_error {

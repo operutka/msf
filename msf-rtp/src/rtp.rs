@@ -225,7 +225,6 @@ impl RtpHeader {
     ///
     /// # Panics
     /// The method panics if the number of identifiers is greater than 255.
-    #[inline]
     pub fn with_csrcs<T>(mut self, csrcs: T) -> Self
     where
         T: Into<Vec<u32>>,
@@ -241,7 +240,6 @@ impl RtpHeader {
     }
 
     /// Get raw size of the header (i.e. byte length of the encoded header).
-    #[inline]
     pub fn raw_size(&self) -> usize {
         std::mem::size_of::<RawRtpHeader>()
             + (self.csrcs.len() << 2)
@@ -524,7 +522,6 @@ impl RtpPacket {
     ///
     /// # Panics
     /// The method panics if the number of identifiers is greater than 255.
-    #[inline]
     pub fn with_csrcs<T>(mut self, csrcs: T) -> Self
     where
         T: Into<Vec<u32>>,
@@ -566,7 +563,6 @@ impl RtpPacket {
     ///
     /// If the padding is zero, no padding will be added and the padding bit in
     /// the RTP header will be set to zero.
-    #[inline]
     pub fn with_payload(mut self, payload: Bytes, padding: u8) -> Self {
         if padding > 0 {
             let len = payload.len() + (padding as usize);
@@ -594,7 +590,6 @@ impl RtpPacket {
     /// The method panics if the given payload is empty, if the last byte is
     /// zero or if the length of the padding is greater than the length of the
     /// payload.
-    #[inline]
     pub fn with_padded_payload(mut self, payload: Bytes) -> Self {
         let padding_len = payload.last().copied().expect("empty payload") as usize;
 

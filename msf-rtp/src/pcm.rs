@@ -293,7 +293,6 @@ impl Packetizer for PCMPacketizer {
     type Frame = AudioFrame;
     type Error = Infallible;
 
-    #[inline]
     fn push(&mut self, frame: Self::Frame) -> Result<(), Self::Error> {
         assert!(self.packet.is_none());
 

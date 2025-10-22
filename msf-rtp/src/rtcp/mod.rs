@@ -31,7 +31,6 @@ pub struct CompoundRtcpPacket {
 
 impl CompoundRtcpPacket {
     /// Create a new compound packet.
-    #[inline]
     pub fn new<T>(packets: T) -> Self
     where
         T: Into<Vec<RtcpPacket>>,
@@ -42,7 +41,6 @@ impl CompoundRtcpPacket {
     }
 
     /// Decode a compound RTCP packet.
-    #[inline]
     pub fn decode(mut frame: Bytes) -> Result<Self, InvalidInput> {
         let mut res = Vec::new();
 
@@ -54,7 +52,6 @@ impl CompoundRtcpPacket {
     }
 
     /// Encode the packet.
-    #[inline]
     pub fn encode(&self, buf: &mut BytesMut) {
         buf.reserve(self.raw_size());
 
@@ -64,7 +61,6 @@ impl CompoundRtcpPacket {
     }
 
     /// Get encoded size of the compound packet.
-    #[inline]
     pub fn raw_size(&self) -> usize {
         self.inner.iter().map(|packet| packet.length()).sum()
     }
@@ -435,7 +431,6 @@ impl RtcpPacket {
     /// The method panics if the payload length including padding is not a
     /// multiple of four or if the payload length including padding is greater
     /// than 262_140.
-    #[inline]
     pub fn with_payload(mut self, mut payload: Bytes, padding: u8) -> Self {
         if padding > 0 {
             let len = payload.len() + (padding as usize);
@@ -477,7 +472,6 @@ impl RtcpPacket {
     /// * The payload length including padding must be a multiple of four.
     /// * The payload length including padding must not be greater than
     ///   262_140.
-    #[inline]
     pub fn with_padded_payload(mut self, payload: Bytes) -> Self {
         let padding_len = payload.last().copied().expect("empty payload") as usize;
 

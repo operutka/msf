@@ -136,11 +136,13 @@ impl SSRCRxStats {
     }
 
     /// Get the instant when the last reception report was generated.
+    #[inline]
     pub fn last_reception_report_at(&self) -> Option<Instant> {
         self.last_rr_at
     }
 
     /// Check if a BYE packet was received.
+    #[inline]
     pub fn bye_received(&self) -> bool {
         self.bye_received
     }
@@ -190,8 +192,7 @@ pub struct SSRCTxStats {
 
 impl SSRCTxStats {
     /// Create new RTP sender statistics.
-    #[inline]
-    pub const fn new(ssrc: u32, clock_rate: u32) -> Self {
+    pub fn new(ssrc: u32, clock_rate: u32) -> Self {
         Self {
             ssrc,
             clock_rate,

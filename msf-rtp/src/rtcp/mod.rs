@@ -2,9 +2,11 @@
 
 mod bye;
 mod channel;
+mod context;
 mod handler;
 mod report;
 mod sdes;
+mod stats;
 
 use std::ops::Deref;
 
@@ -15,6 +17,7 @@ use crate::InvalidInput;
 pub use self::{
     bye::ByePacket,
     channel::RtcpChannel,
+    context::{RtcpContext, RtcpContextHandle},
     handler::{MuxedRtcpHandler, RtcpHandler},
     report::{ReceiverReport, ReportBlock, SenderReport},
     sdes::{SourceDescription, SourceDescriptionPacket},
@@ -149,6 +152,9 @@ pub struct RtcpHeader {
 }
 
 impl RtcpHeader {
+    /// Size of an encoded RTCP header.
+    pub const RAW_SIZE: usize = std::mem::size_of::<RawRtcpHeader>();
+
     /// Create a new packet header.
     #[inline]
     pub const fn new(packet_type: RtcpPacketType) -> Self {

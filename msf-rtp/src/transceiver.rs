@@ -1,12 +1,22 @@
 //! RTP transceiver.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    convert::Infallible,
     ops::{Deref, DerefMut},
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
+    time::Instant,
 };
 
-use crate::rtcp::RtcpContextHandle;
+use futures::{ready, Sink, Stream};
+
+use crate::{
+    rtcp::{RtcpContext, RtcpContextHandle},
+    rtp::{IncomingRtpPacket, RtpPacket},
+    utils::{OrderedRtpPacket, ReorderingError, ReorderingMultiBuffer},
+};
 
 /// RTP packet transceiver.
 pub trait RtpTransceiver {
@@ -308,5 +318,244 @@ impl InnerTransceiverOptions {
             output_ssrcs: SSRC2ClockRate::new(),
             max_rtcp_packet_size: 1200,
         }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Default RTP transceiver implementation.
+    pub struct DefaultRtpTransceiver<T, E = Infallible> {
+        #[pin]
+        inner: T,
+        context: TransceiverContext,
+        error: Option<E>,
+        eof: bool,
+    }
+}
+
+impl<T, E> DefaultRtpTransceiver<T, E> {
+    /// Create a new RTP packet receiver.
+    pub fn new(stream: T, options: RtpTransceiverOptions) -> Self {
+        Self {
+            inner: stream,
+            context: TransceiverContext::new(options),
+            error: None,
+            eof: false,
+        }
+    }
+}
+
+impl<T, E> Stream for DefaultRtpTransceiver<T, E>
+where
+    T: Stream<Item = Result<RtpPacket, E>>,
+{
+    type Item = Result<OrderedRtpPacket, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            if let Some(packet) = this.context.poll_next_ordered_packet() {
+                return Poll::Ready(Some(Ok(packet)));
+            }
+
+            let inner = this.inner.as_mut();
+
+            if !*this.eof {
+                let ready = if this.context.end_of_stream() {
+                    None
+                } else {
+                    ready!(inner.poll_next(cx))
+                };
+
+                match ready {
+                    Some(Ok(packet)) => this.context.process_incoming_packet(packet),
+                    other => {
+                        if let Some(Err(err)) = other {
+                            *this.error = Some(err);
+                        }
+
+                        *this.eof = true;
+                    }
+                }
+            } else if let Some(packet) = this.context.take_next_ordered_packet() {
+                return Poll::Ready(Some(Ok(packet)));
+            } else if let Some(err) = this.error.take() {
+                return Poll::Ready(Some(Err(err)));
+            } else {
+                return Poll::Ready(None);
+            }
+        }
+    }
+}
+
+impl<T, E> Sink<RtpPacket> for DefaultRtpTransceiver<T, E>
+where
+    T: Sink<RtpPacket>,
+{
+    type Error = T::Error;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_ready(cx))?;
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.context.process_outgoing_packet(&packet);
+
+        this.inner.start_send(packet)?;
+
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_flush(cx))?;
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_close(cx))?;
+
+        this.context.close();
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<T, E> RtpTransceiver for DefaultRtpTransceiver<T, E> {
+    fn rtcp_context(&self) -> RtcpContextHandle {
+        self.context.rtcp_context()
+    }
+}
+
+/// RTP transceiver context.
+struct TransceiverContext {
+    options: RtpTransceiverOptions,
+    rtcp: RtcpContext,
+    buffer: ReorderingMultiBuffer,
+    output: VecDeque<OrderedRtpPacket>,
+}
+
+impl TransceiverContext {
+    /// Create a new RTP receiver context.
+    fn new(options: RtpTransceiverOptions) -> Self {
+        let input_ssrcs = options.input_ssrcs();
+        let expected_ssrcs = input_ssrcs.len();
+
+        let max_input_ssrcs = options.max_input_ssrcs().map(|max| max.max(expected_ssrcs));
+
+        let max_ssrc_buffers = match options.input_ssrc_mode() {
+            SSRCMode::Ignore => Some(1),
+            SSRCMode::Any => max_input_ssrcs,
+            SSRCMode::Specific => Some(expected_ssrcs),
+        };
+
+        let reordering_buffer_depth = options.reordering_buffer_depth();
+
+        Self {
+            options: options.clone(),
+            rtcp: RtcpContext::new(options),
+            buffer: ReorderingMultiBuffer::new(reordering_buffer_depth, max_ssrc_buffers),
+            output: VecDeque::new(),
+        }
+    }
+
+    /// Process a given outgoing RTP packet.
+    fn process_outgoing_packet(&mut self, packet: &RtpPacket) {
+        self.rtcp.process_outgoing_rtp_packet(packet);
+    }
+
+    /// Process a given incoming RTP packet.
+    fn process_incoming_packet(&mut self, packet: RtpPacket) {
+        let ssrc = packet.ssrc();
+
+        let input_ssrcs = self.options.input_ssrcs();
+        let input_ssrc_mode = self.options.input_ssrc_mode();
+
+        if input_ssrc_mode == SSRCMode::Specific && !input_ssrcs.contains(ssrc) {
+            return;
+        }
+
+        let now = Instant::now();
+
+        let packet = IncomingRtpPacket::new(packet, now);
+
+        // update the statistics (we need to do this before modifying the SSRC)
+        self.rtcp.process_incoming_rtp_packet(&packet);
+
+        let mut packet = RtpPacket::from(packet);
+
+        // set SSRC to 0 if we are ignoring SSRCs
+        if input_ssrc_mode == SSRCMode::Ignore {
+            packet = packet.with_ssrc(0);
+        }
+
+        let mut packet = IncomingRtpPacket::new(packet, now);
+
+        // put the packet into the reordering buffer, skipping missing packets
+        // if necessary
+        while let Err(ReorderingError::BufferFull(tmp)) = self.buffer.push(packet) {
+            if let Some(p) = self.buffer.take() {
+                self.process_ordered_packet(p);
+            }
+
+            packet = tmp;
+        }
+
+        // take all in-order packets from the reordering buffer
+        while let Some(p) = self.buffer.next() {
+            self.process_ordered_packet(p);
+        }
+    }
+
+    /// Process a given incoming RTP packet after reordering.
+    fn process_ordered_packet(&mut self, packet: OrderedRtpPacket) {
+        self.rtcp.process_ordered_rtp_packet(&packet);
+        self.output.push_back(packet);
+    }
+
+    /// Take the next incoming packet RTP without skipping missing packets.
+    fn poll_next_ordered_packet(&mut self) -> Option<OrderedRtpPacket> {
+        self.output.pop_front()
+    }
+
+    /// Take the next incoming RTP packet from the reordering buffer.
+    ///
+    /// This method will skip missing packets if necessary.
+    fn take_next_ordered_packet(&mut self) -> Option<OrderedRtpPacket> {
+        while self.output.is_empty() {
+            if self.buffer.is_empty() {
+                break;
+            } else if let Some(packet) = self.buffer.take() {
+                self.process_ordered_packet(packet);
+            }
+        }
+
+        self.output.pop_front()
+    }
+
+    /// Check if the end of stream has been signaled by the other peer via the
+    /// RTCP channel.
+    fn end_of_stream(&self) -> bool {
+        self.rtcp.end_of_stream()
+    }
+
+    /// Signal the end of stream to the other peer via the RTCP channel.
+    fn close(&mut self) {
+        self.rtcp.close();
+    }
+
+    /// Get the transceiver's RTCP context handle.
+    fn rtcp_context(&self) -> RtcpContextHandle {
+        self.rtcp.handle()
     }
 }

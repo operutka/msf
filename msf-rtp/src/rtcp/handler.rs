@@ -155,11 +155,11 @@ impl<T> RtcpHandler<T> {
     }
 }
 
-impl<T, E> Stream for RtcpHandler<T>
+impl<T, P, E> Stream for RtcpHandler<T>
 where
-    T: Stream<Item = Result<RtpPacket, E>>,
+    T: Stream<Item = Result<P, E>>,
 {
-    type Item = Result<RtpPacket, E>;
+    type Item = Result<P, E>;
 
     #[inline]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -169,9 +169,9 @@ where
     }
 }
 
-impl<T, E> Sink<RtpPacket> for RtcpHandler<T>
+impl<T, P, E> Sink<P> for RtcpHandler<T>
 where
-    T: Sink<RtpPacket, Error = E>,
+    T: Sink<P, Error = E>,
 {
     type Error = E;
 
@@ -183,7 +183,7 @@ where
     }
 
     #[inline]
-    fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, packet: P) -> Result<(), Self::Error> {
         let this = self.project();
 
         this.stream.start_send(packet)
@@ -338,7 +338,7 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
                 return self.poll_writer_result(cx);
             }
 
-            let res = ready!(self.inner.poll_ready_unpin(cx));
+            let res = ready!(SinkExt::<RtpPacket>::poll_ready_unpin(&mut self.inner, cx));
 
             if res.is_ok() {
                 return Poll::Ready(Ok(()));
@@ -349,7 +349,7 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: RtpPacket) -> Result<(), Self::Error> {
-        let res = self.inner.start_send_unpin(item);
+        let res = SinkExt::<RtpPacket>::start_send_unpin(&mut self.inner, item);
 
         // we cannot get the actual error here, it needs to be polled out from
         // the writer
@@ -366,7 +366,7 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
                 return self.poll_writer_result(cx);
             }
 
-            let res = ready!(self.inner.poll_flush_unpin(cx));
+            let res = ready!(SinkExt::<RtpPacket>::poll_flush_unpin(&mut self.inner, cx));
 
             if res.is_ok() {
                 return Poll::Ready(Ok(()));
@@ -382,7 +382,7 @@ impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
                 return self.poll_writer_result(cx);
             }
 
-            let res = ready!(self.inner.poll_close_unpin(cx));
+            let res = ready!(SinkExt::<RtpPacket>::poll_close_unpin(&mut self.inner, cx));
 
             if res.is_ok() {
                 return Poll::Ready(Ok(()));
@@ -651,7 +651,11 @@ impl Stream for RtcpOutputStream {
                 return Poll::Ready(Some(packet));
             }
 
-            ready!(self.interval.poll_tick(cx));
+            let closed = self.context.poll_closed(cx);
+
+            if closed.is_pending() {
+                ready!(self.interval.poll_tick(cx));
+            }
 
             let packets = self.context.create_rtcp_reports();
 
@@ -661,5 +665,366 @@ impl Stream for RtcpOutputStream {
 
             self.output.extend(packets);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        convert::Infallible,
+        pin::Pin,
+        sync::{Arc, Mutex},
+        task::{Context, Poll},
+        time::{Duration, Instant},
+    };
+
+    use futures::{channel::mpsc, Sink, SinkExt, Stream, StreamExt};
+
+    use super::{MuxedRtcpHandler, RtcpHandler, RtcpHandlerOptions, StreamSink};
+
+    use crate::{
+        rtcp::{RtcpContext, RtcpPacketType},
+        rtp::{IncomingRtpPacket, RtpPacket},
+        transceiver::{DefaultRtpTransceiver, RtpTransceiver, RtpTransceiverOptions, SSRCMode},
+        utils::OrderedRtpPacket,
+        PacketMux,
+    };
+
+    fn make_rtp_packet(ssrc: u32, seq: u16, timestamp: u32) -> RtpPacket {
+        RtpPacket::new()
+            .with_ssrc(ssrc)
+            .with_sequence_number(seq)
+            .with_timestamp(timestamp)
+    }
+
+    /// Helper stream-sink for testing.
+    #[derive(Clone)]
+    struct RtcpTestChannel<I, O> {
+        inner: Arc<Mutex<InnerRtcpTestChannel<I, O>>>,
+    }
+
+    impl<I, O> RtcpTestChannel<I, O> {
+        /// Create a new RTCP test channel.
+        fn new<T>(input: T) -> Self
+        where
+            T: IntoIterator<Item = I>,
+        {
+            Self {
+                inner: Arc::new(Mutex::new(InnerRtcpTestChannel::new(input))),
+            }
+        }
+    }
+
+    impl<I, O> Stream for RtcpTestChannel<I, O> {
+        type Item = Result<I, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let mut inner = self.inner.lock().unwrap();
+
+            if let Some(packet) = inner.input.pop_front() {
+                Poll::Ready(Some(Ok(packet)))
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl<I, O> Sink<O> for RtcpTestChannel<I, O> {
+        type Error = Infallible;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, packet: O) -> Result<(), Self::Error> {
+            let mut inner = self.inner.lock().unwrap();
+            inner.output.push(packet);
+
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.inner.lock().unwrap().closed = true;
+
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Inner RTCP test channel.
+    struct InnerRtcpTestChannel<I, O> {
+        input: VecDeque<I>,
+        output: Vec<O>,
+        closed: bool,
+    }
+
+    impl<I, O> InnerRtcpTestChannel<I, O> {
+        /// Create a new inner RTCP test channel.
+        fn new<T>(input: T) -> Self
+        where
+            T: IntoIterator<Item = I>,
+        {
+            Self {
+                input: VecDeque::from_iter(input),
+                output: Vec::new(),
+                closed: false,
+            }
+        }
+    }
+
+    /// Test transceiver for muxed RTP-RTCP streams.
+    #[derive(Clone)]
+    struct MuxedTestTransceiver {
+        inner: Arc<Mutex<InnerMuxedTestTransceiver>>,
+    }
+
+    impl MuxedTestTransceiver {
+        /// Create a new muxed RTP-RTCP test transceiver.
+        fn new<T>(input: T, options: RtpTransceiverOptions) -> Self
+        where
+            T: IntoIterator<Item = PacketMux>,
+        {
+            let inner = InnerMuxedTestTransceiver::new(input, options);
+
+            Self {
+                inner: Arc::new(Mutex::new(inner)),
+            }
+        }
+    }
+
+    impl Stream for MuxedTestTransceiver {
+        type Item = Result<PacketMux, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let mut inner = self.inner.lock().unwrap();
+
+            if let Some(packet) = inner.inner.input.pop_front() {
+                let packet = if let PacketMux::Rtp(packet) = packet {
+                    let index = packet.sequence_number() as u64;
+
+                    let now = Instant::now();
+                    let incoming = IncomingRtpPacket::new(packet, now);
+                    let ordered = OrderedRtpPacket::new(incoming, index);
+
+                    inner.context.process_incoming_rtp_packet(&ordered);
+                    inner.context.process_ordered_rtp_packet(&ordered);
+
+                    PacketMux::Rtp(ordered.into())
+                } else {
+                    packet
+                };
+
+                Poll::Ready(Some(Ok(packet)))
+            } else {
+                Poll::Ready(None)
+            }
+        }
+    }
+
+    impl Sink<PacketMux> for MuxedTestTransceiver {
+        type Error = Infallible;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, packet: PacketMux) -> Result<(), Self::Error> {
+            let mut inner = self.inner.lock().unwrap();
+
+            if let PacketMux::Rtp(packet) = &packet {
+                inner.context.process_outgoing_rtp_packet(packet);
+            }
+
+            inner.inner.output.push(packet);
+
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            let mut inner = self.inner.lock().unwrap();
+
+            inner.inner.closed = true;
+
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl RtpTransceiver for MuxedTestTransceiver {
+        fn rtcp_context(&self) -> crate::rtcp::RtcpContextHandle {
+            let inner = self.inner.lock().unwrap();
+
+            inner.context.handle()
+        }
+    }
+
+    /// Inner muxed RTP-RTCP test transceiver.
+    struct InnerMuxedTestTransceiver {
+        inner: InnerRtcpTestChannel<PacketMux, PacketMux>,
+        context: RtcpContext,
+    }
+
+    impl InnerMuxedTestTransceiver {
+        /// Create a new inner muxed RTP-RTCP test transceiver.
+        fn new<T>(input: T, options: RtpTransceiverOptions) -> Self
+        where
+            T: IntoIterator<Item = PacketMux>,
+        {
+            Self {
+                inner: InnerRtcpTestChannel::new(input),
+                context: RtcpContext::new(options),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handler_task_termination() {
+        let (mut incoming_rtp_tx, incoming_rtp_rx) =
+            mpsc::unbounded::<Result<RtpPacket, Infallible>>();
+        let (outgoing_rtp_tx, outgoing_rtp_rx) = mpsc::unbounded::<RtpPacket>();
+
+        let rtp = StreamSink::new(incoming_rtp_rx, outgoing_rtp_tx);
+
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(0)
+            .with_input_ssrc_mode(SSRCMode::Any);
+
+        let rtp = DefaultRtpTransceiver::<_, Infallible>::new(rtp, options);
+
+        let rtcp = RtcpTestChannel::new([]);
+
+        let options = RtcpHandlerOptions::new()
+            .with_ignore_decoding_errors(true)
+            .with_rtcp_report_interval(Duration::from_millis(100));
+
+        let handler = RtcpHandler::new(rtp, rtcp.clone(), options);
+
+        let handler = tokio::spawn(async move { handler.collect::<Vec<_>>().await });
+
+        incoming_rtp_tx
+            .send(Ok(make_rtp_packet(1, 1, 100)))
+            .await
+            .unwrap();
+        incoming_rtp_tx.close().await.unwrap();
+
+        let incoming_rtp_packets = handler.await.unwrap();
+
+        std::mem::drop(outgoing_rtp_rx);
+
+        assert_eq!(incoming_rtp_packets.len(), 1);
+
+        let packet = incoming_rtp_packets.into_iter().next().unwrap().unwrap();
+
+        assert_eq!(packet.ssrc(), 1);
+        assert_eq!(packet.sequence_number(), 1);
+        assert_eq!(packet.timestamp(), 100);
+
+        let wait_for_close = async {
+            while Arc::strong_count(&rtcp.inner) > 1 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), wait_for_close)
+            .await
+            .expect("RTCP handler tasks have not terminated");
+
+        // once we reach here, both RTCP handler tasks are already terminated
+        let rtcp = Arc::try_unwrap(rtcp.inner)
+            .ok()
+            .unwrap()
+            .into_inner()
+            .ok()
+            .unwrap();
+
+        assert!(rtcp.closed);
+
+        assert_eq!(rtcp.output.len(), 1);
+
+        let report = &rtcp.output[0];
+
+        assert_eq!(report.len(), 3);
+
+        let rr = &report[0];
+        let sdes = &report[1];
+        let bye = &report[2];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+        assert_eq!(bye.packet_type(), RtcpPacketType::BYE);
+    }
+
+    #[tokio::test]
+    async fn test_muxed_handler_task_termination() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(0)
+            .with_input_ssrc_mode(SSRCMode::Any);
+
+        let packet = PacketMux::Rtp(make_rtp_packet(1, 1, 100));
+
+        let muxed = MuxedTestTransceiver::new([packet], options);
+
+        let options = RtcpHandlerOptions::new()
+            .with_ignore_decoding_errors(true)
+            .with_rtcp_report_interval(Duration::from_millis(100));
+
+        let handler = MuxedRtcpHandler::new(muxed.clone(), options);
+
+        let handler = tokio::spawn(async move { handler.collect::<Vec<_>>().await });
+
+        let incoming_rtp_packets = handler.await.unwrap();
+
+        assert_eq!(incoming_rtp_packets.len(), 1);
+
+        let packet = incoming_rtp_packets.into_iter().next().unwrap().unwrap();
+
+        assert_eq!(packet.ssrc(), 1);
+        assert_eq!(packet.sequence_number(), 1);
+        assert_eq!(packet.timestamp(), 100);
+
+        let wait_for_close = async {
+            while Arc::strong_count(&muxed.inner) > 1 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), wait_for_close)
+            .await
+            .expect("RTCP handler tasks have not terminated");
+
+        // once we reach here, all RTCP handler tasks are already terminated
+        let muxed = Arc::try_unwrap(muxed.inner)
+            .ok()
+            .unwrap()
+            .into_inner()
+            .ok()
+            .unwrap();
+
+        assert!(muxed.inner.closed);
+
+        assert_eq!(muxed.inner.output.len(), 1);
+
+        let PacketMux::Rtcp(report) = &muxed.inner.output[0] else {
+            panic!("expected RTCP packet");
+        };
+
+        assert_eq!(report.len(), 3);
+
+        let rr = &report[0];
+        let sdes = &report[1];
+        let bye = &report[2];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+        assert_eq!(bye.packet_type(), RtcpPacketType::BYE);
     }
 }

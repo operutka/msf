@@ -37,3 +37,7 @@ path = "../msf-util"
 [dependencies.tokio]
 version = "1"
 features = ["rt", "time"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["full"]

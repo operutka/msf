@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -168,6 +169,19 @@ impl RtcpContextHandle {
     pub fn close(&self) {
         self.inner.lock().unwrap().close();
     }
+
+    /// Poll the closed state of the RTCP context.
+    ///
+    /// The method returns `Poll::Ready(())` if the `close` method has been
+    /// called or the parent RTCP context has been dropped. Otherwise, it
+    /// returns `Poll::Pending`. It can be used to register a task waker that
+    /// will be notified when the context is closed.
+    ///
+    /// There can be only one task waker per the whole context. Only the last
+    /// registered waker will be notified when the context is closed.
+    pub fn poll_closed(&self, cx: &mut Context<'_>) -> Poll<()> {
+        self.inner.lock().unwrap().poll_closed(cx)
+    }
 }
 
 /// Internal RTCP context state.
@@ -186,6 +200,7 @@ struct InternalContext {
     tx_stats: HashMap<u32, SSRCTxStats>,
     last_ssrc: Option<u32>,
     state: ContextState,
+    closed_waker: Option<Waker>,
 }
 
 impl InternalContext {
@@ -211,6 +226,7 @@ impl InternalContext {
             tx_stats: HashMap::new(),
             last_ssrc: None,
             state: ContextState::Open,
+            closed_waker: None,
         }
     }
 
@@ -226,8 +242,12 @@ impl InternalContext {
 
         self.last_ssrc = Some(ssrc);
 
-        if self.options.input_ssrc_mode() == SSRCMode::Ignore {
-            ssrc = 0;
+        let input_ssrcs = self.options.input_ssrcs();
+
+        match self.options.input_ssrc_mode() {
+            SSRCMode::Ignore => ssrc = 0,
+            SSRCMode::Specific if !input_ssrcs.contains(ssrc) => return,
+            _ => (),
         }
 
         self.get_rx_stats_mut(ssrc)
@@ -238,8 +258,12 @@ impl InternalContext {
     fn process_ordered_rtp_packet(&mut self, packet: &OrderedRtpPacket) {
         let mut ssrc = packet.ssrc();
 
-        if self.options.input_ssrc_mode() == SSRCMode::Ignore {
-            ssrc = 0;
+        let input_ssrcs = self.options.input_ssrcs();
+
+        match self.options.input_ssrc_mode() {
+            SSRCMode::Ignore => ssrc = 0,
+            SSRCMode::Specific if !input_ssrcs.contains(ssrc) => return,
+            _ => (),
         }
 
         self.get_rx_stats_mut(ssrc)
@@ -310,8 +334,35 @@ impl InternalContext {
     /// generating further RTCP reports. A sender SSRC is considered active if
     /// we have sent at least one RTP packet with the SSRC.
     fn close(&mut self) {
+        if self.state != ContextState::Open {
+            return;
+        }
+
+        self.state = ContextState::Closing;
+
+        if let Some(waker) = self.closed_waker.take() {
+            waker.wake();
+        }
+    }
+
+    /// Poll the closed state of the RTCP context.
+    ///
+    /// The method returns `Poll::Ready(())` if the `close` method has been
+    /// called or the parent RTCP context has been dropped. Otherwise, it
+    /// returns `Poll::Pending`. It can be used to register a task waker that
+    /// will be notified when the context is closed.
+    ///
+    /// There can be only one task waker per the whole context. Only the last
+    /// registered waker will be notified when the context is closed.
+    fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.state == ContextState::Open {
-            self.state = ContextState::Closing;
+            let waker = cx.waker();
+
+            self.closed_waker = Some(waker.clone());
+
+            Poll::Pending
+        } else {
+            Poll::Ready(())
         }
     }
 
@@ -374,6 +425,7 @@ impl InternalContext {
             .collect::<Vec<_>>();
 
         report_order.sort_unstable_by_key(|&(_, d)| d);
+        report_order.reverse();
 
         report_order
             .into_iter()
@@ -667,5 +719,520 @@ impl From<SenderReport> for RtcpReport {
 impl From<ReceiverReport> for RtcpReport {
     fn from(rr: ReceiverReport) -> Self {
         Self::Receiver(rr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::InternalContext;
+
+    use crate::{
+        rtcp::{ByePacket, ReceiverReport, RtcpPacketType, SenderReport},
+        rtp::{IncomingRtpPacket, RtpPacket},
+        transceiver::{RtpTransceiverOptions, SSRCMode},
+        utils::OrderedRtpPacket,
+    };
+
+    fn make_rtp_packet(ssrc: u32, seq: u16, timestamp: u32) -> RtpPacket {
+        RtpPacket::new()
+            .with_ssrc(ssrc)
+            .with_sequence_number(seq)
+            .with_timestamp(timestamp)
+    }
+
+    fn make_ordered_rtp_packet(ssrc: u32, index: u64, timestamp: u32) -> OrderedRtpPacket {
+        let packet = make_rtp_packet(ssrc, index as u16, timestamp);
+
+        let incoming = IncomingRtpPacket::new(packet, Instant::now());
+
+        OrderedRtpPacket::new(incoming, index)
+    }
+
+    #[test]
+    fn test_input_ssrc_ignore_mode() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(1)
+            .with_input_ssrc_mode(SSRCMode::Ignore);
+
+        let mut context = InternalContext::new(options);
+
+        let packets = vec![
+            make_ordered_rtp_packet(10, 1, 100),
+            make_ordered_rtp_packet(20, 1, 200),
+            make_ordered_rtp_packet(30, 1, 300),
+        ];
+
+        context.process_incoming_rtp_packet(&packets[0]);
+        context.process_ordered_rtp_packet(&packets[0]);
+        context.process_incoming_rtp_packet(&packets[1]);
+        context.process_ordered_rtp_packet(&packets[1]);
+
+        let ssrcs = context
+            .rx_stats
+            .iter()
+            .map(|(&ssrc, _)| ssrc)
+            .collect::<Vec<_>>();
+
+        assert_eq!(&ssrcs[..], &[0]);
+
+        context.process_incoming_rtp_packet(&packets[2]);
+        context.process_ordered_rtp_packet(&packets[2]);
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 2);
+
+        let rr = &report[0];
+        let sdes = &report[1];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+
+        // we expect only one report block with the last SSRC used (i.e. 30)
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 1);
+
+        for rb in rbs {
+            assert_eq!(rb.ssrc(), 30);
+        }
+    }
+
+    #[test]
+    fn test_input_ssrc_specific_mode() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(1)
+            .with_input_ssrc_mode(SSRCMode::Specific)
+            .with_input_ssrcs([(20, 1000)]);
+
+        let mut context = InternalContext::new(options);
+
+        let packets = vec![
+            make_ordered_rtp_packet(10, 1, 100),
+            make_ordered_rtp_packet(20, 1, 200),
+            make_ordered_rtp_packet(30, 1, 300),
+        ];
+
+        for packet in &packets {
+            context.process_incoming_rtp_packet(packet);
+            context.process_ordered_rtp_packet(packet);
+        }
+
+        let ssrcs = context
+            .rx_stats
+            .iter()
+            .map(|(&ssrc, _)| ssrc)
+            .collect::<Vec<_>>();
+
+        assert_eq!(&ssrcs[..], &[20]);
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 2);
+
+        let rr = &report[0];
+        let sdes = &report[1];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+
+        // we expect only one report block for SSRC 20
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 1);
+
+        for rb in rbs {
+            assert_eq!(rb.ssrc(), 20);
+        }
+    }
+
+    #[test]
+    fn test_input_ssrc_any_mode() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(1)
+            .with_input_ssrc_mode(SSRCMode::Any)
+            .with_max_input_ssrcs(Some(2));
+
+        let mut context = InternalContext::new(options);
+
+        let packets = vec![
+            make_ordered_rtp_packet(10, 1, 100),
+            make_ordered_rtp_packet(20, 1, 200),
+            make_ordered_rtp_packet(30, 1, 300),
+        ];
+
+        context.process_incoming_rtp_packet(&packets[0]);
+        context.process_ordered_rtp_packet(&packets[0]);
+        context.process_incoming_rtp_packet(&packets[1]);
+        context.process_ordered_rtp_packet(&packets[1]);
+
+        let mut ssrcs = context
+            .rx_stats
+            .iter()
+            .map(|(&ssrc, _)| ssrc)
+            .collect::<Vec<_>>();
+
+        ssrcs.sort_unstable();
+
+        assert_eq!(&ssrcs[..], &[10, 20]);
+
+        context.process_incoming_rtp_packet(&packets[2]);
+        context.process_ordered_rtp_packet(&packets[2]);
+
+        let mut ssrcs = context
+            .rx_stats
+            .iter()
+            .map(|(&ssrc, _)| ssrc)
+            .collect::<Vec<_>>();
+
+        ssrcs.sort_unstable();
+
+        // we expect the least recently updated SSRC stats to be dropped
+        assert_eq!(&ssrcs[..], &[20, 30]);
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 2);
+
+        let rr = &report[0];
+        let sdes = &report[1];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+
+        // we expect there will be two report blocks - one for SSRC 20 and one
+        // for SSRC 30
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 2);
+
+        for rb in rbs {
+            assert!(rb.ssrc() == 20 || rb.ssrc() == 30);
+        }
+    }
+
+    #[test]
+    fn test_sender_report_generation() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(10)
+            .with_input_ssrc_mode(SSRCMode::Ignore);
+
+        let mut context = InternalContext::new(options);
+
+        let packet = make_ordered_rtp_packet(10, 1, 100);
+
+        context.process_incoming_rtp_packet(&packet);
+        context.process_ordered_rtp_packet(&packet);
+        context.process_outgoing_rtp_packet(&packet);
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 2);
+
+        let sr = &report[0];
+        let sdes = &report[1];
+
+        assert_eq!(sr.packet_type(), RtcpPacketType::SR);
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+
+        let sr = SenderReport::decode(sr).unwrap();
+
+        assert_eq!(sr.sender_ssrc(), 10);
+        assert_eq!(sr.octet_count(), 0);
+        assert_eq!(sr.packet_count(), 1);
+
+        let rbs = sr.report_blocks();
+
+        assert_eq!(rbs.len(), 1);
+
+        for rb in rbs {
+            assert_eq!(rb.ssrc(), 10);
+        }
+    }
+
+    #[test]
+    fn test_multiple_sender_ssrcs() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(10);
+
+        let mut context = InternalContext::new(options);
+
+        context.process_outgoing_rtp_packet(&make_rtp_packet(10, 1, 100));
+        context.process_outgoing_rtp_packet(&make_rtp_packet(20, 1, 100));
+
+        let reports = context.create_rtcp_reports();
+
+        assert_eq!(reports.len(), 2);
+
+        // there should be two packets in each report: SR and SDES
+        for r in &reports {
+            assert_eq!(r.len(), 2);
+
+            let sr = &r[0];
+            let sdes = &r[1];
+
+            assert_eq!(sr.packet_type(), RtcpPacketType::SR);
+            assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+        }
+
+        let primary = &reports[0][0];
+        let secondary = &reports[1][0];
+
+        let sr = SenderReport::decode(primary).unwrap();
+
+        assert_eq!(sr.sender_ssrc(), 10);
+
+        let sr = SenderReport::decode(secondary).unwrap();
+
+        assert_eq!(sr.sender_ssrc(), 20);
+    }
+
+    #[test]
+    fn test_end_of_stream() {
+        // first we test it with any/arbitrary number of input SSRCs
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(1)
+            .with_input_ssrc_mode(SSRCMode::Any)
+            .with_max_input_ssrcs(Some(3));
+
+        let mut context = InternalContext::new(options);
+
+        assert!(!context.end_of_stream());
+
+        let packets = vec![
+            make_ordered_rtp_packet(10, 1, 100),
+            make_ordered_rtp_packet(20, 1, 200),
+            make_ordered_rtp_packet(30, 1, 300),
+        ];
+
+        for packet in &packets {
+            context.process_incoming_rtp_packet(packet);
+            context.process_ordered_rtp_packet(packet);
+        }
+
+        assert!(!context.end_of_stream());
+
+        context.process_incoming_bye_packet(&ByePacket::new([10]));
+
+        assert!(!context.end_of_stream());
+
+        context.process_incoming_bye_packet(&ByePacket::new([20, 30]));
+
+        assert!(context.end_of_stream());
+
+        // then we test it with specific input SSRCs
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(1)
+            .with_input_ssrc_mode(SSRCMode::Specific)
+            .with_input_ssrcs([(10, 1000), (20, 1000), (30, 1000)]);
+
+        let mut context = InternalContext::new(options);
+
+        assert!(!context.end_of_stream());
+
+        let packets = vec![
+            make_ordered_rtp_packet(10, 1, 100),
+            make_ordered_rtp_packet(20, 1, 200),
+        ];
+
+        for packet in &packets {
+            context.process_incoming_rtp_packet(packet);
+            context.process_ordered_rtp_packet(packet);
+        }
+
+        assert!(!context.end_of_stream());
+
+        context.process_incoming_bye_packet(&ByePacket::new([10]));
+
+        assert!(!context.end_of_stream());
+
+        context.process_incoming_bye_packet(&ByePacket::new([20]));
+
+        assert!(!context.end_of_stream());
+
+        context.process_incoming_bye_packet(&ByePacket::new([30]));
+
+        assert!(context.end_of_stream());
+    }
+
+    #[test]
+    fn test_multi_packet_receiver_report() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(0)
+            .with_input_ssrc_mode(SSRCMode::Any)
+            .with_max_input_ssrcs(None)
+            .with_max_rtcp_packet_size(836);
+
+        let mut context = InternalContext::new(options);
+
+        for i in 0..33 {
+            let packet = make_ordered_rtp_packet(0 + i, 1, 100);
+
+            context.process_incoming_rtp_packet(&packet);
+            context.process_ordered_rtp_packet(&packet);
+        }
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 3);
+
+        let rr = &report[0];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(rr.raw_size(), 752);
+
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 31);
+
+        for (i, rb) in rbs.iter().enumerate() {
+            assert_eq!(rb.ssrc(), i as u32);
+        }
+
+        let rr = &report[1];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(rr.raw_size(), 56);
+
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 2);
+
+        for (i, rb) in rbs.iter().enumerate() {
+            assert_eq!(rb.ssrc(), (i + 31) as u32);
+        }
+
+        let sdes = &report[2];
+
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+        assert_eq!(sdes.raw_size(), 28);
+
+        assert_eq!(report.raw_size(), 836);
+
+        // now we repeat the test with a smaller max RTCP packet size that
+        // forces us to create two receiver report packets but with one less
+        // report block
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(0)
+            .with_input_ssrc_mode(SSRCMode::Any)
+            .with_max_input_ssrcs(None)
+            .with_max_rtcp_packet_size(835);
+
+        let mut context = InternalContext::new(options);
+
+        for i in 0..33 {
+            let packet = make_ordered_rtp_packet(0 + i, 1, 100);
+
+            context.process_incoming_rtp_packet(&packet);
+            context.process_ordered_rtp_packet(&packet);
+        }
+
+        let report = context.create_primary_rtcp_report();
+
+        assert_eq!(report.len(), 3);
+
+        let rr = &report[0];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(rr.raw_size(), 752);
+
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 31);
+
+        for (i, rb) in rbs.iter().enumerate() {
+            assert_eq!(rb.ssrc(), i as u32);
+        }
+
+        let rr = &report[1];
+
+        assert_eq!(rr.packet_type(), RtcpPacketType::RR);
+        assert_eq!(rr.raw_size(), 32);
+
+        let rr = ReceiverReport::decode(rr).unwrap();
+
+        let rbs = rr.report_blocks();
+
+        assert_eq!(rbs.len(), 1);
+
+        for (i, rb) in rbs.iter().enumerate() {
+            assert_eq!(rb.ssrc(), (i + 31) as u32);
+        }
+
+        let sdes = &report[2];
+
+        assert_eq!(sdes.packet_type(), RtcpPacketType::SDES);
+        assert_eq!(sdes.raw_size(), 28);
+
+        assert_eq!(report.raw_size(), 812);
+    }
+
+    #[test]
+    fn test_context_closing() {
+        let options = RtpTransceiverOptions::new()
+            .with_default_clock_rate(1000)
+            .with_primary_sender_ssrc(10);
+
+        let mut context = InternalContext::new(options);
+
+        let reports = context.create_rtcp_reports();
+
+        assert_eq!(reports.len(), 1);
+
+        for r in &reports {
+            assert_eq!(r.len(), 2); // empty RR + SDES
+        }
+
+        context.process_outgoing_rtp_packet(&make_rtp_packet(10, 1, 100));
+        context.process_outgoing_rtp_packet(&make_rtp_packet(20, 1, 100));
+
+        let reports = context.create_rtcp_reports();
+
+        assert_eq!(reports.len(), 2);
+
+        for r in &reports {
+            assert_eq!(r.len(), 2); // empty RR + SDES
+        }
+
+        context.close();
+
+        let reports = context.create_rtcp_reports();
+
+        assert_eq!(reports.len(), 2);
+
+        for r in &reports {
+            assert_eq!(r.len(), 3); // SR + SDES + BYE
+
+            let bye = &r[2];
+
+            assert_eq!(bye.packet_type(), RtcpPacketType::BYE);
+        }
+
+        let reports = context.create_rtcp_reports();
+
+        assert!(reports.is_empty());
     }
 }

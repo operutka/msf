@@ -10,20 +10,6 @@ pub const CLOCK_RATE: u32 = 90_000;
 /// Packetization mode used by the packetizer as defined in RFC 6184.
 pub const PACKETIZATION_MODE: u8 = 1;
 
-/// Maximum NAL unit size before fragmentation takes place.
-///
-/// The theoretical maximum is 65535 - IP header size - UDP header size - RTP
-/// header size, which is 65495 for IPv4. However, some headers may have
-/// optional parts, so the maximum NAL unit size should not exceed 65000.
-///
-/// MTU of the underlying network should be also considered. For Ethernet it's
-/// 1500, for PPPoE, which is also frequently used, it's 1492. The maximum size
-/// of an IP packet header is 60 for IPv4 and 40 for IPv6. The size of the UDP
-/// header is 8 and the maximum size of an RTP header is 72. Therefore, if we
-/// set the fragmentation threshold to 1352, we should avoid fragmentation on
-/// the link and network layer in most of the cases.
-const FRAGMENTATION_THRESHOLD: usize = 1_352;
-
 /// H.264 access unit.
 #[derive(Clone)]
 pub struct AccessUnit {
@@ -63,23 +49,42 @@ pub struct H264Packetizer {
     ssrc: u32,
     sequence_number: u16,
     packets: VecDeque<RtpPacket>,
+    fragmentation_threshold: usize,
 }
 
 impl H264Packetizer {
     /// Create a new H.264 packetizer.
     #[inline]
-    pub fn new(payload_type: u8, ssrc: u32) -> Self {
+    pub const fn new(payload_type: u8, ssrc: u32) -> Self {
         Self {
             payload_type,
             ssrc,
             sequence_number: 0,
             packets: VecDeque::new(),
+            fragmentation_threshold: 1188,
         }
+    }
+
+    /// Set the maximum RTP packet size.
+    ///
+    /// The default limit is 1200 bytes. This should be safe for UDP transport
+    /// in IPv4/IPv6 networks with typical MTU sizes across the Internet.
+    ///
+    /// # Panics
+    /// The method will panic if the given size is less than 128 bytes.
+    #[inline]
+    pub const fn with_max_rtp_packet_size(mut self, size: usize) -> Self {
+        assert!(size >= 128);
+
+        // NOTE: The minimum RTP header size is 12 bytes. We don't set any
+        //   additional extensions or CSRC identifiers.
+        self.fragmentation_threshold = size - 12;
+        self
     }
 
     /// Create a single RTP packet from a given NAL unit.
     fn push_single_nal_unit(&mut self, timestamp: u32, marker: bool, nal_unit: Bytes) {
-        debug_assert!(nal_unit.len() <= FRAGMENTATION_THRESHOLD);
+        debug_assert!(nal_unit.len() <= self.fragmentation_threshold);
 
         let packet = RtpPacket::new()
             .with_payload_type(self.payload_type)
@@ -96,7 +101,7 @@ impl H264Packetizer {
 
     /// Fragment a given NAL unit into several FU-A RTP packets.
     fn push_fragmented_nal_unit(&mut self, timestamp: u32, marker: bool, mut nal_unit: Bytes) {
-        debug_assert!(nal_unit.len() > FRAGMENTATION_THRESHOLD);
+        debug_assert!(nal_unit.len() > self.fragmentation_threshold);
 
         let nal_unit_type = nal_unit[0] & 0x1f;
 
@@ -109,7 +114,7 @@ impl H264Packetizer {
 
         while !nal_unit.is_empty() {
             let available = nal_unit.len();
-            let take = available.min(FRAGMENTATION_THRESHOLD - 2);
+            let take = available.min(self.fragmentation_threshold - 2);
             let chunk = nal_unit.split_to(take);
 
             // set the fragmentation end bit if this is the last chunk
@@ -174,7 +179,7 @@ impl Packetizer for H264Packetizer {
 
             if nal_unit_type == 0 || nal_unit_type > 23 {
                 return Err(InvalidInput);
-            } else if nal_unit.len() > FRAGMENTATION_THRESHOLD {
+            } else if nal_unit.len() > self.fragmentation_threshold {
                 self.push_fragmented_nal_unit(timestamp, marker, nal_unit);
             } else {
                 self.push_single_nal_unit(timestamp, marker, nal_unit);

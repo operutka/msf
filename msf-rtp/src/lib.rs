@@ -23,10 +23,10 @@ pub use self::{
     depacketizer::{Depacketizer, MediaStream},
     packetizer::{MediaSink, Packetizer},
     rtcp::{CompoundRtcpPacket, RtcpHeader, RtcpPacket, RtcpPacketType},
-    rtp::{IncomingRtpPacket, RtpHeader, RtpHeaderExtension, RtpPacket},
+    rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpHeader, RtpHeaderExtension, RtpPacket},
 };
 
-/// Invalid input.
+/// Invalid input error.
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidInput;
 
@@ -38,34 +38,3 @@ impl Display for InvalidInput {
 }
 
 impl std::error::Error for InvalidInput {}
-
-/// RTP or RTCP packet.
-///
-/// This is useful when RTP and RTCP packets can be multiplexed in a single
-/// channel. See RFC 5761 for more info.
-#[derive(Clone)]
-pub enum PacketMux {
-    Rtp(RtpPacket),
-    Rtcp(CompoundRtcpPacket),
-}
-
-impl From<RtpPacket> for PacketMux {
-    #[inline]
-    fn from(packet: RtpPacket) -> Self {
-        Self::Rtp(packet)
-    }
-}
-
-impl From<RtcpPacket> for PacketMux {
-    #[inline]
-    fn from(packet: RtcpPacket) -> Self {
-        Self::Rtcp(packet.into())
-    }
-}
-
-impl From<CompoundRtcpPacket> for PacketMux {
-    #[inline]
-    fn from(packet: CompoundRtcpPacket) -> Self {
-        Self::Rtcp(packet)
-    }
-}

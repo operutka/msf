@@ -1,10 +1,10 @@
 //! Helpers.
 
-use std::{borrow::Borrow, collections::VecDeque, ops::Deref};
+use std::{collections::VecDeque, ops::Deref};
 
 use lru::LruCache;
 
-use crate::rtp::{IncomingRtpPacket, RtpPacket};
+use crate::rtp::{IncomingRtpPacket, OrderedRtpPacket};
 
 /// Reordering error.
 pub enum ReorderingError {
@@ -24,78 +24,6 @@ impl ReorderingError {
     #[inline]
     pub fn is_duplicate(&self) -> bool {
         matches!(self, Self::DuplicatePacket(_))
-    }
-}
-
-/// Ordered RTP packet.
-#[derive(Clone)]
-pub struct OrderedRtpPacket {
-    inner: IncomingRtpPacket,
-    index: u64,
-}
-
-impl OrderedRtpPacket {
-    /// Create a new ordered RTP packet.
-    #[inline]
-    pub const fn new(inner: IncomingRtpPacket, index: u64) -> Self {
-        Self { inner, index }
-    }
-
-    /// Get the estimated packet index (a.k.a. extended sequence number).
-    #[inline]
-    pub fn index(&self) -> u64 {
-        self.index
-    }
-}
-
-impl AsRef<IncomingRtpPacket> for OrderedRtpPacket {
-    #[inline]
-    fn as_ref(&self) -> &IncomingRtpPacket {
-        &self.inner
-    }
-}
-
-impl AsRef<RtpPacket> for OrderedRtpPacket {
-    #[inline]
-    fn as_ref(&self) -> &RtpPacket {
-        &self.inner
-    }
-}
-
-impl Borrow<IncomingRtpPacket> for OrderedRtpPacket {
-    #[inline]
-    fn borrow(&self) -> &IncomingRtpPacket {
-        &self.inner
-    }
-}
-
-impl Borrow<RtpPacket> for OrderedRtpPacket {
-    #[inline]
-    fn borrow(&self) -> &RtpPacket {
-        &self.inner
-    }
-}
-
-impl Deref for OrderedRtpPacket {
-    type Target = IncomingRtpPacket;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl From<OrderedRtpPacket> for IncomingRtpPacket {
-    #[inline]
-    fn from(packet: OrderedRtpPacket) -> Self {
-        packet.inner
-    }
-}
-
-impl From<OrderedRtpPacket> for RtpPacket {
-    #[inline]
-    fn from(packet: OrderedRtpPacket) -> Self {
-        packet.inner.into()
     }
 }
 

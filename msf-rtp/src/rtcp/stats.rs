@@ -2,8 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     rtcp::{ByePacket, ReportBlock, SenderReport},
-    rtp::{IncomingRtpPacket, RtpPacket},
-    utils::OrderedRtpPacket,
+    rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpPacket},
 };
 
 /// RTP receiver statistics for a single SSRC.

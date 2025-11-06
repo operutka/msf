@@ -15,7 +15,8 @@ use tokio::{
 use crate::{
     rtcp::{ByePacket, ReceiverReport, RtcpContextHandle, RtcpPacketType, SenderReport},
     transceiver::RtpTransceiver,
-    CompoundRtcpPacket, InvalidInput, PacketMux, RtpPacket,
+    utils::PacketMux,
+    CompoundRtcpPacket, InvalidInput, RtpPacket,
 };
 
 /// RTCP handler options.
@@ -196,11 +197,16 @@ where
         this.stream.poll_flush(cx)
     }
 
-    #[inline]
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
-        this.stream.poll_close(cx)
+        ready!(this.stream.poll_close(cx))?;
+
+        // close the RTCP context here just in case the stream itself did not
+        // do it
+        this.context.context.close();
+
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -212,7 +218,8 @@ struct RtcpHandlerContext {
 
 impl Drop for RtcpHandlerContext {
     fn drop(&mut self) {
-        // generate final RTCP reports including BYE packets
+        // close the RTCP context here just in case the RTCP handler sink was
+        // not closed
         self.context.close();
 
         // stop the RTCP receiver
@@ -221,13 +228,13 @@ impl Drop for RtcpHandlerContext {
 }
 
 /// Type alias.
-type DemuxingRtpStream<E> = mpsc::Receiver<Result<RtpPacket, E>>;
+type DemuxingRtpStream<P, E> = mpsc::Receiver<Result<P, E>>;
 
 /// Type alias.
 type MuxingRtpSink = PacketMuxer<mpsc::Sender<PacketMux>>;
 
 /// Type alias.
-type RtpComponent<E> = StreamSink<DemuxingRtpStream<E>, MuxingRtpSink>;
+type RtpComponent<P, E> = StreamSink<DemuxingRtpStream<P, E>, MuxingRtpSink>;
 
 /// RTCP protocol handler for muxed RTP-RTCP streams.
 ///
@@ -235,21 +242,22 @@ type RtpComponent<E> = StreamSink<DemuxingRtpStream<E>, MuxingRtpSink>;
 /// necessary RTCP communication. The resulting object can be used as an RTP
 /// stream/sink while the corresponding RTCP communication is handled
 /// automatically by a background task.
-pub struct MuxedRtcpHandler<E> {
-    inner: RtcpHandler<RtpComponent<E>>,
+pub struct MuxedRtcpHandler<P, E> {
+    inner: RtcpHandler<RtpComponent<P, E>>,
     reader: JoinHandle<()>,
     writer: JoinHandle<Result<(), E>>,
     sink_error: bool,
 }
 
-impl<E> MuxedRtcpHandler<E> {
+impl<P, E> MuxedRtcpHandler<P, E> {
     /// Create a new RTCP handler.
     pub fn new<T>(stream: T, options: RtcpHandlerOptions) -> Self
     where
         T: Send + 'static,
-        T: Stream<Item = Result<PacketMux, E>>,
+        T: Stream<Item = Result<PacketMux<P>, E>>,
         T: Sink<PacketMux, Error = E>,
         T: RtpTransceiver,
+        P: Send + 'static,
         E: Send + 'static,
     {
         let rtcp_context = stream.rtcp_context();
@@ -313,15 +321,15 @@ impl<E> MuxedRtcpHandler<E> {
     }
 }
 
-impl<E> Drop for MuxedRtcpHandler<E> {
+impl<P, E> Drop for MuxedRtcpHandler<P, E> {
     #[inline]
     fn drop(&mut self) {
         self.reader.abort();
     }
 }
 
-impl<E> Stream for MuxedRtcpHandler<E> {
-    type Item = Result<RtpPacket, E>;
+impl<P, E> Stream for MuxedRtcpHandler<P, E> {
+    type Item = Result<P, E>;
 
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -329,7 +337,7 @@ impl<E> Stream for MuxedRtcpHandler<E> {
     }
 }
 
-impl<E> Sink<RtpPacket> for MuxedRtcpHandler<E> {
+impl<P, E> Sink<RtpPacket> for MuxedRtcpHandler<P, E> {
     type Error = E;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -685,10 +693,9 @@ mod tests {
 
     use crate::{
         rtcp::{RtcpContext, RtcpPacketType},
-        rtp::{IncomingRtpPacket, RtpPacket},
+        rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpPacket},
         transceiver::{DefaultRtpTransceiver, RtpTransceiver, RtpTransceiverOptions, SSRCMode},
-        utils::OrderedRtpPacket,
-        PacketMux,
+        utils::PacketMux,
     };
 
     fn make_rtp_packet(ssrc: u32, seq: u16, timestamp: u32) -> RtpPacket {

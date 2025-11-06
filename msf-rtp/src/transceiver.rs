@@ -14,8 +14,8 @@ use futures::{ready, Sink, Stream};
 
 use crate::{
     rtcp::{RtcpContext, RtcpContextHandle},
-    rtp::{IncomingRtpPacket, RtpPacket},
-    utils::{OrderedRtpPacket, ReorderingError, ReorderingMultiBuffer},
+    rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpPacket},
+    utils::reorder::{ReorderingError, ReorderingMultiBuffer},
 };
 
 /// RTP packet transceiver.

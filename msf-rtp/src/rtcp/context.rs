@@ -14,9 +14,8 @@ use crate::{
         ByePacket, CompoundRtcpPacket, ReceiverReport, ReportBlock, RtcpHeader, RtcpPacket,
         SenderReport, SourceDescription, SourceDescriptionPacket,
     },
-    rtp::{IncomingRtpPacket, RtpPacket},
+    rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpPacket},
     transceiver::{RtpTransceiverOptions, SSRCMode},
-    utils::OrderedRtpPacket,
 };
 
 /// RTCP context.
@@ -730,9 +729,8 @@ mod tests {
 
     use crate::{
         rtcp::{ByePacket, ReceiverReport, RtcpPacketType, SenderReport},
-        rtp::{IncomingRtpPacket, RtpPacket},
+        rtp::{IncomingRtpPacket, OrderedRtpPacket, RtpPacket},
         transceiver::{RtpTransceiverOptions, SSRCMode},
-        utils::OrderedRtpPacket,
     };
 
     fn make_rtp_packet(ssrc: u32, seq: u16, timestamp: u32) -> RtpPacket {

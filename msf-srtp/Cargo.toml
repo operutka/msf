@@ -1,6 +1,6 @@
 [package]
 name = "msf-srtp"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -20,7 +20,7 @@ openssl = "0.10"
 pin-project-lite = "0.2"
 
 [dependencies.msf-rtp]
-version = "0.2"
+version = "0.3"
 path = "../msf-rtp"
 
 [dependencies.tokio]

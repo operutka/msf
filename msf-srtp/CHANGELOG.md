@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.0 (2025-11-06)
+
+* Switch to msf-rtp v0.3
+
 ## v0.2.1 (2025-07-23)
 
 * Fix unaligned reads and writes

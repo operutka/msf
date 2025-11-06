@@ -78,7 +78,7 @@ impl RtcpContext {
         self.inner.lock().unwrap().close();
     }
 
-    /// Check if end of stream has been reached.
+    /// Check if the end of stream has been reached.
     ///
     /// The method checks the end-of-stream condition based on the configured
     /// SSRC mode and the reception of BYE packets for the relevant SSRCs.
@@ -180,6 +180,22 @@ impl RtcpContextHandle {
     /// registered waker will be notified when the context is closed.
     pub fn poll_closed(&self, cx: &mut Context<'_>) -> Poll<()> {
         self.inner.lock().unwrap().poll_closed(cx)
+    }
+
+    /// Check if the end of stream has been reached.
+    ///
+    /// The method checks the end-of-stream condition based on the configured
+    /// SSRC mode and the reception of BYE packets for the relevant SSRCs.
+    ///
+    /// * If the input SSRC mode is `Specific`, the method returns true if BYE
+    ///   packets have been received for all configured input SSRCs.
+    /// * If the input SSRC mode is `Ignore`, the method returns true if at
+    ///   least one BYE packet has been received.
+    /// * If the input SSRC mode is `Any`, the method returns true if BYE
+    ///   packets have been received for all currently tracked SSRCs on the
+    ///   receiver side and there is at least one such SSRC.
+    pub fn end_of_stream(&self) -> bool {
+        self.inner.lock().unwrap().end_of_stream()
     }
 }
 

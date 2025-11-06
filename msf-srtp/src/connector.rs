@@ -8,7 +8,12 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{ready, Sink, SinkExt, Stream, StreamExt};
-use msf_rtp::{CompoundRtcpPacket, PacketMux, RtcpPacketType, RtpPacket};
+use msf_rtp::{
+    rtcp::{CompoundRtcpPacket, RtcpContextHandle, RtcpPacketType},
+    transceiver::{RtpTransceiver, RtpTransceiverOptions, SSRCMode},
+    utils::PacketMux,
+    OrderedRtpPacket, RtpPacket,
+};
 use openssl::ssl::{HandshakeError, Ssl, SslStream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -29,11 +34,17 @@ impl Connector {
     }
 
     /// Perform a "connect" DTLS handshake.
-    pub async fn connect_srtp<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
+    pub async fn connect_srtp<S>(
+        self,
+        mut stream: S,
+        options: RtpTransceiverOptions,
+    ) -> Result<SrtpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.connect(&mut stream).await?;
+        let session = self.connect(&mut stream, options).await?;
 
         Ok(SrtpStream::new(session, stream))
     }
@@ -41,29 +52,52 @@ impl Connector {
     /// Perform a "connect" DTLS handshake.
     pub async fn connect_srtcp<S>(self, mut stream: S) -> Result<SrtcpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.connect(&mut stream).await?;
+        // We don't expect any RTP packets in the channel and even if there are
+        // any, they will be dropped. The RTCP context handle won't be used
+        // either. So let's make the reordering buffer and the RTCP context as
+        // small as possible.
+        let options = RtpTransceiverOptions::new()
+            .with_input_ssrc_mode(SSRCMode::Ignore)
+            .with_max_input_ssrcs(Some(1))
+            .with_reordering_buffer_depth(1);
+
+        let session = self.connect(&mut stream, options).await?;
 
         Ok(SrtcpStream::new(session, stream))
     }
 
     /// Perform a "connect" DTLS handshake.
-    pub async fn connect_muxed<S>(self, mut stream: S) -> Result<MuxedSrtpStream<S>, Error>
+    pub async fn connect_muxed<S>(
+        self,
+        mut stream: S,
+        options: RtpTransceiverOptions,
+    ) -> Result<MuxedSrtpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.connect(&mut stream).await?;
+        let session = self.connect(&mut stream, options).await?;
 
         Ok(MuxedSrtpStream::new(session, stream))
     }
 
     /// Perform an "accept" DTLS handshake.
-    pub async fn accept_srtp<S>(self, mut stream: S) -> Result<SrtpStream<S>, Error>
+    pub async fn accept_srtp<S>(
+        self,
+        mut stream: S,
+        options: RtpTransceiverOptions,
+    ) -> Result<SrtpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.accept(&mut stream).await?;
+        let session = self.accept(&mut stream, options).await?;
 
         Ok(SrtpStream::new(session, stream))
     }
@@ -71,27 +105,50 @@ impl Connector {
     /// Perform an "accept" DTLS handshake.
     pub async fn accept_srtcp<S>(self, mut stream: S) -> Result<SrtcpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.accept(&mut stream).await?;
+        // We don't expect any RTP packets in the channel and even if there are
+        // any, they will be dropped. The RTCP context handle won't be used
+        // either. So let's make the reordering buffer and the RTCP context as
+        // small as possible.
+        let options = RtpTransceiverOptions::new()
+            .with_input_ssrc_mode(SSRCMode::Ignore)
+            .with_max_input_ssrcs(Some(1))
+            .with_reordering_buffer_depth(1);
+
+        let session = self.accept(&mut stream, options).await?;
 
         Ok(SrtcpStream::new(session, stream))
     }
 
     /// Perform an "accept" DTLS handshake.
-    pub async fn accept_muxed<S>(self, mut stream: S) -> Result<MuxedSrtpStream<S>, Error>
+    pub async fn accept_muxed<S>(
+        self,
+        mut stream: S,
+        options: RtpTransceiverOptions,
+    ) -> Result<MuxedSrtpStream<S>, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
-        let session = self.accept(&mut stream).await?;
+        let session = self.accept(&mut stream, options).await?;
 
         Ok(MuxedSrtpStream::new(session, stream))
     }
 
     /// Perform a "connect" DTLS handshake.
-    async fn connect<S>(self, stream: &mut S) -> Result<SrtpSession, Error>
+    async fn connect<S>(
+        self,
+        stream: &mut S,
+        options: RtpTransceiverOptions,
+    ) -> Result<SrtpSession, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let mut ssl_stream = InnerSslStream::new(stream);
 
@@ -108,13 +165,21 @@ impl Connector {
 
         let ssl_stream = handshake.await?;
 
-        SrtpSession::client(ssl_stream.ssl())
+        let ssl = ssl_stream.ssl();
+
+        SrtpSession::client(ssl, options)
     }
 
     /// Perform an "accept" DTLS handshake.
-    async fn accept<S>(self, stream: &mut S) -> Result<SrtpSession, Error>
+    async fn accept<S>(
+        self,
+        stream: &mut S,
+        options: RtpTransceiverOptions,
+    ) -> Result<SrtpSession, Error>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let mut ssl_stream = InnerSslStream::new(stream);
 
@@ -131,13 +196,18 @@ impl Connector {
 
         let ssl_stream = handshake.await?;
 
-        SrtpSession::server(ssl_stream.ssl())
+        let ssl = ssl_stream.ssl();
+
+        SrtpSession::server(ssl, options)
     }
 }
 
-/// SRTP stream.
-pub struct SrtpStream<S> {
-    inner: MuxedSrtpStream<S>,
+pin_project_lite::pin_project! {
+    /// SRTP stream.
+    pub struct SrtpStream<S> {
+        #[pin]
+        inner: MuxedSrtpStream<S>,
+    }
 }
 
 impl<S> SrtpStream<S> {
@@ -151,54 +221,91 @@ impl<S> SrtpStream<S> {
 
 impl<S> Stream for SrtpStream<S>
 where
-    S: Stream<Item = io::Result<Bytes>> + Unpin,
+    S: Stream<Item = io::Result<Bytes>>,
 {
-    type Item = Result<RtpPacket, Error>;
+    type Item = Result<OrderedRtpPacket, Error>;
 
     #[inline]
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        while let Poll::Ready(ready) = self.inner.poll_next_unpin(cx) {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            let inner = this.inner.as_mut();
+
+            let inner = inner.project();
+
+            if inner.session.end_of_stream() {
+                *inner.eof = true;
+            }
+
+            let inner = this.inner.as_mut();
+
+            let ready = ready!(inner.poll_next(cx));
+
             match ready.transpose()? {
                 Some(PacketMux::Rtp(packet)) => return Poll::Ready(Some(Ok(packet))),
                 Some(PacketMux::Rtcp(_)) => (),
                 None => return Poll::Ready(None),
             }
         }
-
-        Poll::Pending
     }
 }
 
 impl<S> Sink<RtpPacket> for SrtpStream<S>
 where
-    S: Sink<Bytes, Error = io::Error> + Unpin,
+    S: Sink<Bytes, Error = io::Error>,
 {
     type Error = Error;
 
     #[inline]
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready_unpin(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_ready(cx)
     }
 
     #[inline]
-    fn start_send(mut self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
-        self.inner.start_send_unpin(packet.into())
+    fn start_send(self: Pin<&mut Self>, packet: RtpPacket) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.inner.start_send(packet.into())
     }
 
     #[inline]
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_flush_unpin(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_flush(cx)
     }
 
-    #[inline]
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_close_unpin(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let mut this = self.project();
+
+        let inner = this.inner.as_mut();
+
+        ready!(inner.poll_close(cx))?;
+
+        let inner = this.inner.project();
+
+        inner.session.close();
+
+        Poll::Ready(Ok(()))
     }
 }
 
-/// SRTCP stream.
-pub struct SrtcpStream<S> {
-    inner: MuxedSrtpStream<S>,
+impl<S> RtpTransceiver for SrtpStream<S> {
+    #[inline]
+    fn rtcp_context(&self) -> RtcpContextHandle {
+        self.inner.session.rtcp_context()
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// SRTCP stream.
+    pub struct SrtcpStream<S> {
+        #[pin]
+        inner: MuxedSrtpStream<S>,
+    }
 }
 
 impl<S> SrtcpStream<S> {
@@ -212,87 +319,136 @@ impl<S> SrtcpStream<S> {
 
 impl<S> Stream for SrtcpStream<S>
 where
-    S: Stream<Item = io::Result<Bytes>> + Unpin,
+    S: Stream<Item = io::Result<Bytes>>,
 {
     type Item = Result<CompoundRtcpPacket, Error>;
 
     #[inline]
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        while let Poll::Ready(ready) = self.inner.poll_next_unpin(cx) {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            let inner = this.inner.as_mut();
+
+            let ready = ready!(inner.poll_next(cx));
+
             match ready.transpose()? {
                 Some(PacketMux::Rtp(_)) => (),
                 Some(PacketMux::Rtcp(packet)) => return Poll::Ready(Some(Ok(packet))),
                 None => return Poll::Ready(None),
             }
         }
-
-        Poll::Pending
     }
 }
 
 impl<S> Sink<CompoundRtcpPacket> for SrtcpStream<S>
 where
-    S: Sink<Bytes, Error = io::Error> + Unpin,
+    S: Sink<Bytes, Error = io::Error>,
 {
     type Error = Error;
 
     #[inline]
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready_unpin(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_ready(cx)
     }
 
     #[inline]
-    fn start_send(mut self: Pin<&mut Self>, packet: CompoundRtcpPacket) -> Result<(), Self::Error> {
-        self.inner.start_send_unpin(packet.into())
+    fn start_send(self: Pin<&mut Self>, packet: CompoundRtcpPacket) -> Result<(), Self::Error> {
+        let this = self.project();
+
+        this.inner.start_send(packet.into())
     }
 
     #[inline]
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_flush_unpin(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_flush(cx)
     }
 
     #[inline]
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_close_unpin(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        this.inner.poll_close(cx)
     }
 }
 
-/// Muxed SRTP-SRTCP stream.
-pub struct MuxedSrtpStream<S> {
-    session: SrtpSession,
-    inner: S,
+pin_project_lite::pin_project! {
+    /// Muxed SRTP-SRTCP stream.
+    ///
+    /// Note that the `Stream` part won't emit `None` even if we received BYE
+    /// RTCP packets for all SSRCs and the RTCP context signals the end of the
+    /// stream. This is because there still might be incoming RTCP packets
+    /// (e.g. receiver reports required by the `Sink` part). Similarly, the
+    /// `Sink` part won't close the RTCP context on `poll_close` because that
+    /// would be too late (we wouldn't be able to send the generated BYE
+    /// packets if the sink gets closed).
+    ///
+    /// It is up to the implementor to check the RTCP context state and close
+    /// it when needed.
+    pub struct MuxedSrtpStream<S> {
+        #[pin]
+        inner: S,
+        session: SrtpSession,
+        error: Option<Error>,
+        eof: bool,
+    }
 }
 
 impl<S> MuxedSrtpStream<S> {
     /// Create a new muxed SRTP-SRTCP stream.
     fn new(session: SrtpSession, stream: S) -> Self {
         Self {
-            session,
             inner: stream,
+            session,
+            error: None,
+            eof: false,
         }
     }
 }
 
 impl<S> Stream for MuxedSrtpStream<S>
 where
-    S: Stream<Item = io::Result<Bytes>> + Unpin,
+    S: Stream<Item = io::Result<Bytes>>,
 {
-    type Item = Result<PacketMux, Error>;
+    type Item = Result<PacketMux<OrderedRtpPacket>, Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
         loop {
-            if let Some(packet) = self.session.next() {
+            if let Some(packet) = this.session.poll_next_ordered_packet() {
                 return Poll::Ready(Some(Ok(packet)));
-            } else if let Poll::Ready(ready) = self.inner.poll_next_unpin(cx) {
-                if let Some(frame) = ready.transpose()? {
-                    if let Err(DecodingError::Other(err)) = self.session.decode(frame) {
-                        return Poll::Ready(Some(Err(err)));
+            }
+
+            let inner = this.inner.as_mut();
+
+            if !*this.eof {
+                let res = match ready!(inner.poll_next(cx)) {
+                    Some(Ok(frame)) => match this.session.decode(frame) {
+                        Err(DecodingError::Other(err)) => Some(Err(err)),
+                        _ => Some(Ok(())),
+                    },
+                    Some(Err(err)) => Some(Err(err.into())),
+                    None => None,
+                };
+
+                if !matches!(res, Some(Ok(()))) {
+                    if let Some(Err(err)) = res {
+                        *this.error = Some(err);
                     }
-                } else {
-                    return Poll::Ready(None);
+
+                    *this.eof = true;
                 }
+            } else if let Some(packet) = this.session.take_next_ordered_packet() {
+                return Poll::Ready(Some(Ok(packet)));
+            } else if let Some(err) = this.error.take() {
+                return Poll::Ready(Some(Err(err)));
             } else {
-                return Poll::Pending;
+                return Poll::Ready(None);
             }
         }
     }
@@ -300,25 +456,29 @@ where
 
 impl<S> Sink<PacketMux> for MuxedSrtpStream<S>
 where
-    S: Sink<Bytes, Error = io::Error> + Unpin,
+    S: Sink<Bytes, Error = io::Error>,
 {
     type Error = Error;
 
     #[inline]
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.inner.poll_ready_unpin(cx))?;
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_ready(cx))?;
 
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(mut self: Pin<&mut Self>, packet: PacketMux) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, packet: PacketMux) -> Result<(), Self::Error> {
+        let this = self.project();
+
         let frame = match packet {
-            PacketMux::Rtp(packet) => self.session.encode_rtp_packet(packet)?,
+            PacketMux::Rtp(packet) => this.session.encode_rtp_packet(packet)?,
             PacketMux::Rtcp(packet) => {
                 if let Some(first) = packet.first() {
                     match first.packet_type() {
                         RtcpPacketType::SR | RtcpPacketType::RR => {
-                            self.session.encode_rtcp_packet(packet)?
+                            this.session.encode_rtcp_packet(packet)?
                         }
                         _ => return Err(Error::from(InternalError::InvalidPacketType)),
                     }
@@ -328,23 +488,34 @@ where
             }
         };
 
-        self.inner.start_send_unpin(frame)?;
+        this.inner.start_send(frame)?;
 
         Ok(())
     }
 
     #[inline]
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.inner.poll_flush_unpin(cx))?;
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_flush(cx))?;
 
         Poll::Ready(Ok(()))
     }
 
     #[inline]
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.inner.poll_close_unpin(cx))?;
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+
+        ready!(this.inner.poll_close(cx))?;
 
         Poll::Ready(Ok(()))
+    }
+}
+
+impl<S> RtpTransceiver for MuxedSrtpStream<S> {
+    #[inline]
+    fn rtcp_context(&self) -> RtcpContextHandle {
+        self.session.rtcp_context()
     }
 }
 
@@ -586,9 +757,9 @@ where
 
         this.output.extend_from_slice(buf);
 
-        let data = this.output.split_to(this.output.len()).freeze();
+        let data = this.output.split_to(this.output.len());
 
-        this.stream.start_send_unpin(data)?;
+        this.stream.start_send_unpin(data.freeze())?;
 
         Poll::Ready(Ok(buf.len()))
     }

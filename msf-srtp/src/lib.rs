@@ -60,6 +60,8 @@ use openssl::{
 
 use self::connector::Connector;
 
+pub use msf_rtp::transceiver::{RtpTransceiver, RtpTransceiverOptions, SSRC2ClockRate, SSRCMode};
+
 pub use self::{
     connector::{MuxedSrtpStream, SrtcpStream, SrtpStream},
     fingerprint::{CertificateFingerprint, HashFunction, InvalidFingerprint, UnknownHashFunction},
@@ -355,13 +357,16 @@ impl SrtpContext {
         &self,
         stream: S,
         peer_cert_fingerprint: CertificateFingerprint,
+        options: RtpTransceiverOptions,
     ) -> impl Future<Output = Result<SrtpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.connect_srtp(stream).await }
+        async move { connector?.connect_srtp(stream, options).await }
     }
 
     /// Connect to a given SRTCP "server" and check that the peer certificate
@@ -372,7 +377,9 @@ impl SrtpContext {
         peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
@@ -385,13 +392,16 @@ impl SrtpContext {
         &self,
         stream: S,
         peer_cert_fingerprint: CertificateFingerprint,
+        options: RtpTransceiverOptions,
     ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.connect_muxed(stream).await }
+        async move { connector?.connect_muxed(stream, options).await }
     }
 
     /// Accept connection from a given SRTP "client" and check that the peer
@@ -400,13 +410,16 @@ impl SrtpContext {
         &self,
         stream: S,
         peer_cert_fingerprint: CertificateFingerprint,
+        options: RtpTransceiverOptions,
     ) -> impl Future<Output = Result<SrtpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.accept_srtp(stream).await }
+        async move { connector?.accept_srtp(stream, options).await }
     }
 
     /// Accept connection from a given SRTCP "client" and check that the peer
@@ -417,7 +430,9 @@ impl SrtpContext {
         peer_cert_fingerprint: CertificateFingerprint,
     ) -> impl Future<Output = Result<SrtcpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
@@ -430,13 +445,16 @@ impl SrtpContext {
         &self,
         stream: S,
         peer_cert_fingerprint: CertificateFingerprint,
+        options: RtpTransceiverOptions,
     ) -> impl Future<Output = Result<MuxedSrtpStream<S>, Error>>
     where
-        S: Stream<Item = io::Result<Bytes>> + Sink<Bytes, Error = io::Error> + Unpin,
+        S: Stream<Item = io::Result<Bytes>>,
+        S: Sink<Bytes, Error = io::Error>,
+        S: Unpin,
     {
         let connector = self.new_connector(peer_cert_fingerprint);
 
-        async move { connector?.accept_muxed(stream).await }
+        async move { connector?.accept_muxed(stream, options).await }
     }
 
     /// Create a new connector.

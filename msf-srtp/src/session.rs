@@ -1,9 +1,14 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use msf_rtp::{
-    utils::{ReorderingBuffer, ReorderingError},
-    CompoundRtcpPacket, InvalidInput, PacketMux, RtcpPacketType, RtpHeader, RtpPacket,
+    rtcp::{CompoundRtcpPacket, RtcpContext, RtcpContextHandle, RtcpPacketType},
+    transceiver::{RtpTransceiverOptions, SSRCMode},
+    utils::{
+        reorder::{ReorderingError, ReorderingMultiBuffer},
+        PacketMux,
+    },
+    IncomingRtpPacket, InvalidInput, OrderedRtpPacket, RtpHeader, RtpPacket,
 };
 use openssl::{
     hash::MessageDigest,
@@ -54,33 +59,58 @@ pub struct SrtpSession {
     sender_rtp_keys: SessionKeys,
     sender_rtcp_keys: SessionKeys,
 
-    input_buffer: VecDeque<PacketMux>,
-    input_rtp_buffer: ReorderingBuffer,
+    input_buffer: VecDeque<PacketMux<OrderedRtpPacket>>,
+    input_rtp_buffer: ReorderingMultiBuffer,
     input_rtcp_window: ReplayList,
     output_rtp_index: u64,
     output_rtcp_index: u32,
+
+    options: RtpTransceiverOptions,
+    rtcp: RtcpContext,
 }
 
 impl SrtpSession {
     /// Create a new SRTP client session.
-    pub fn client(ssl: &SslRef) -> Result<Self, Error> {
-        Self::new(AgentRole::Client, ssl)
+    pub fn client(ssl: &SslRef, options: RtpTransceiverOptions) -> Result<Self, Error> {
+        Self::new(ssl, options, AgentRole::Client)
     }
 
     /// Create a new SRTP server session.
-    pub fn server(ssl: &SslRef) -> Result<Self, Error> {
-        Self::new(AgentRole::Server, ssl)
+    pub fn server(ssl: &SslRef, options: RtpTransceiverOptions) -> Result<Self, Error> {
+        Self::new(ssl, options, AgentRole::Server)
     }
 
     /// Create a new SRTP session.
-    fn new(agent_role: AgentRole, ssl: &SslRef) -> Result<Self, Error> {
+    fn new(
+        ssl: &SslRef,
+        options: RtpTransceiverOptions,
+        agent_role: AgentRole,
+    ) -> Result<Self, Error> {
         let profile = ssl
             .selected_srtp_profile()
             .ok_or(InternalError::MissingProfile)?;
 
         let profile = SrtpProfile::from_openssl(profile.id())?;
 
-        let master_key = MasterKeyPair::from_ssl(agent_role, profile, ssl)?;
+        let master_key = MasterKeyPair::from_ssl(ssl, profile, agent_role)?;
+
+        let input_ssrcs = options.input_ssrcs();
+        let expected_ssrcs = input_ssrcs.len();
+
+        let max_input_ssrcs = options.max_input_ssrcs().map(|max| max.max(expected_ssrcs));
+
+        let max_ssrc_buffers = match options.input_ssrc_mode() {
+            SSRCMode::Ignore => Some(1),
+            SSRCMode::Any => max_input_ssrcs,
+            SSRCMode::Specific => Some(expected_ssrcs),
+        };
+
+        let reordering_buffer_depth = options.reordering_buffer_depth();
+
+        let input_rtp_buffer =
+            ReorderingMultiBuffer::new(reordering_buffer_depth, max_ssrc_buffers);
+
+        let rtcp = RtcpContext::new(options.clone());
 
         let res = Self {
             profile,
@@ -92,13 +122,33 @@ impl SrtpSession {
             sender_rtcp_keys: SessionKeys::new(),
 
             input_buffer: VecDeque::new(),
-            input_rtp_buffer: ReorderingBuffer::new(64),
+            input_rtp_buffer,
             input_rtcp_window: ReplayList::new(),
             output_rtp_index: 0,
             output_rtcp_index: 0,
+
+            options,
+            rtcp,
         };
 
         Ok(res)
+    }
+
+    /// Get the sessions's RTCP context handle.
+    #[inline]
+    pub fn rtcp_context(&self) -> RtcpContextHandle {
+        self.rtcp.handle()
+    }
+
+    /// Check if the end of stream has been signaled by the other peer via the
+    /// RTCP channel.
+    pub fn end_of_stream(&self) -> bool {
+        self.rtcp.end_of_stream()
+    }
+
+    /// Signal the end of stream to the other peer via the RTCP channel.
+    pub fn close(&mut self) {
+        self.rtcp.close();
     }
 
     /// Decode a given frame and push the resulting packet (if any) into the
@@ -117,8 +167,24 @@ impl SrtpSession {
         }
     }
 
-    /// Take the next available packet from the internal reordering buffer.
-    pub fn next(&mut self) -> Option<PacketMux> {
+    /// Take the next incoming RTP/RTCP packet without skipping missing
+    /// packets.
+    pub fn poll_next_ordered_packet(&mut self) -> Option<PacketMux<OrderedRtpPacket>> {
+        self.input_buffer.pop_front()
+    }
+
+    /// Forcibly take the next incoming RTP/RTCP packet.
+    ///
+    /// This method will skip missing packets if necessary.
+    pub fn take_next_ordered_packet(&mut self) -> Option<PacketMux<OrderedRtpPacket>> {
+        while self.input_buffer.is_empty() {
+            if self.input_rtp_buffer.is_empty() {
+                break;
+            } else if let Some(packet) = self.input_rtp_buffer.take() {
+                self.process_ordered_rtp_packet(packet);
+            }
+        }
+
         self.input_buffer.pop_front()
     }
 
@@ -137,11 +203,22 @@ impl SrtpSession {
 
         let header = RtpHeader::decode(&mut frame)?;
 
+        let ssrc = header.ssrc();
+
+        let input_ssrcs = self.options.input_ssrcs();
+        let input_ssrc_mode = self.options.input_ssrc_mode();
+
+        // ignore packets with unexpected SSRCs (if the SSRC mode is set to
+        // `Specific`)
+        if input_ssrc_mode == SSRCMode::Specific && !input_ssrcs.contains(ssrc) {
+            return Ok(());
+        }
+
         let index = self
             .input_rtp_buffer
-            .estimate_index(header.sequence_number());
+            .estimate_index(ssrc, header.sequence_number());
 
-        if self.input_rtp_buffer.is_duplicate(index) {
+        if self.input_rtp_buffer.is_duplicate(ssrc, index) {
             return Err(DecodingError::DuplicatePacket);
         }
 
@@ -155,23 +232,53 @@ impl SrtpSession {
 
         payload.resize(frame.len(), 0);
 
-        session_key.decrypt_rtp_payload(header.ssrc(), index, &frame, &mut payload)?;
+        session_key.decrypt_rtp_payload(ssrc, index, &frame, &mut payload)?;
 
-        let mut packet = RtpPacket::from_parts(header, payload.freeze())?;
+        let packet = RtpPacket::from_parts(header, payload.freeze())?;
 
+        self.process_incoming_rtp_packet(packet);
+
+        Ok(())
+    }
+
+    /// Process a given incoming RTP packet.
+    fn process_incoming_rtp_packet(&mut self, packet: RtpPacket) {
+        let now = Instant::now();
+
+        let packet = IncomingRtpPacket::new(packet, now);
+
+        // update the statistics (we need to do this before modifying the SSRC)
+        self.rtcp.process_incoming_rtp_packet(&packet);
+
+        let mut packet = RtpPacket::from(packet);
+
+        // set SSRC to 0 if we are ignoring SSRCs
+        if self.options.input_ssrc_mode() == SSRCMode::Ignore {
+            packet = packet.with_ssrc(0);
+        }
+
+        let mut packet = IncomingRtpPacket::new(packet, now);
+
+        // put the packet into the reordering buffer, skipping missing packets
+        // if necessary
         while let Err(ReorderingError::BufferFull(tmp)) = self.input_rtp_buffer.push(packet) {
             if let Some(p) = self.input_rtp_buffer.take() {
-                self.input_buffer.push_back(p.into());
+                self.process_ordered_rtp_packet(p);
             }
 
             packet = tmp;
         }
 
+        // take all in-order packets from the reordering buffer
         while let Some(p) = self.input_rtp_buffer.next() {
-            self.input_buffer.push_back(p.into());
+            self.process_ordered_rtp_packet(p);
         }
+    }
 
-        Ok(())
+    /// Process a given incoming RTP packet after reordering.
+    fn process_ordered_rtp_packet(&mut self, packet: OrderedRtpPacket) {
+        self.rtcp.process_ordered_rtp_packet(&packet);
+        self.input_buffer.push_back(PacketMux::Rtp(packet));
     }
 
     /// Decode an RTCP packet from a given frame.
@@ -226,6 +333,8 @@ impl SrtpSession {
 
     /// Encode a given RTP packet.
     pub fn encode_rtp_packet(&mut self, packet: RtpPacket) -> Result<Bytes, Error> {
+        self.rtcp.process_outgoing_rtp_packet(&packet);
+
         let index = self.output_rtp_index;
 
         self.output_rtp_index = self.output_rtp_index.wrapping_add(1);
@@ -339,7 +448,7 @@ struct MasterKeyPair {
 
 impl MasterKeyPair {
     /// Extract a pair of master keys from a given SSL object.
-    fn from_ssl(agent_role: AgentRole, profile: SrtpProfile, ssl: &SslRef) -> Result<Self, Error> {
+    fn from_ssl(ssl: &SslRef, profile: SrtpProfile, agent_role: AgentRole) -> Result<Self, Error> {
         let master_key_len = ((profile.master_key_len() + 7) >> 3) as usize;
         let master_salt_len = ((profile.master_salt_len() + 7) >> 3) as usize;
 

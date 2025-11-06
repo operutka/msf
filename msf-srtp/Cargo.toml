@@ -17,6 +17,7 @@ bytes = "1"
 futures = "0.3"
 libc = "0.2"
 openssl = "0.10"
+pin-project-lite = "0.2"
 
 [dependencies.msf-rtp]
 version = "0.2"

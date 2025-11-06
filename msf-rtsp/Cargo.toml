@@ -45,7 +45,7 @@ path = "../msf-sdp"
 
 [dependencies.tokio]
 version = "1"
-features = ["net", "rt"]
+features = ["net", "rt", "sync"]
 optional = true
 
 [dependencies.tokio-util]

@@ -16,7 +16,7 @@ use std::{
 };
 
 use futures::{Sink, SinkExt, Stream, StreamExt, TryStreamExt};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Semaphore};
 
 use self::{
     connection::InternalConnection,
@@ -134,6 +134,8 @@ impl RtspServerBuilder {
     }
 
     /// Set read timeout for client connections.
+    ///
+    /// The default value is 60 seconds.
     #[inline]
     pub const fn read_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.options.read_timeout = timeout;
@@ -141,6 +143,8 @@ impl RtspServerBuilder {
     }
 
     /// Set write timeout for client connections.
+    ///
+    /// The default value is 60 seconds.
     #[inline]
     pub const fn write_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.options.write_timeout = timeout;
@@ -148,6 +152,8 @@ impl RtspServerBuilder {
     }
 
     /// Enable or disable acceptance of all line endings (CR, LF, CRLF).
+    ///
+    /// The default is disabled.
     #[inline]
     pub const fn accept_all_line_endings(mut self, enabled: bool) -> Self {
         self.options.request_decoder_options = self
@@ -160,6 +166,8 @@ impl RtspServerBuilder {
 
     /// Set maximum line length for request header lines and chunked body
     /// headers.
+    ///
+    /// The default value is 4096 bytes.
     #[inline]
     pub const fn max_line_length(mut self, max_length: Option<usize>) -> Self {
         self.options.request_decoder_options = self
@@ -171,6 +179,8 @@ impl RtspServerBuilder {
     }
 
     /// Set maximum header field length.
+    ///
+    /// The default value is 4096 bytes.
     #[inline]
     pub const fn max_header_field_length(mut self, max_length: Option<usize>) -> Self {
         self.options.request_decoder_options = self
@@ -182,6 +192,8 @@ impl RtspServerBuilder {
     }
 
     /// Set maximum number of lines for the request header.
+    ///
+    /// The default value is 64.
     #[inline]
     pub const fn max_header_fields(mut self, max_fields: Option<usize>) -> Self {
         self.options.request_decoder_options = self
@@ -193,6 +205,8 @@ impl RtspServerBuilder {
     }
 
     /// Set the maximum size of a request body.
+    ///
+    /// The default value is 2 MiB.
     #[inline]
     pub const fn max_body_size(mut self, size: Option<usize>) -> Self {
         self.options.request_decoder_options =
@@ -201,21 +215,36 @@ impl RtspServerBuilder {
         self
     }
 
+    /// Set the maximum number of concurrent client connections.
+    ///
+    /// The default value is 100.
+    #[inline]
+    pub fn max_connections(mut self, max: Option<u32>) -> Self {
+        self.options.max_connections = max;
+        self
+    }
+
     /// Set the maximum number of in-progress requests per connection.
+    ///
+    /// The default value is 10.
     #[inline]
     pub fn request_pipeline_depth(mut self, depth: usize) -> Self {
         self.options.request_pipeline_depth = depth;
         self
     }
 
-    /// Enable RTSP/1.0 (default: enabled).
+    /// Enable RTSP/1.0.
+    ///
+    /// The default is enabled.
     #[inline]
     pub fn enable_rtsp_10(mut self, enabled: bool) -> Self {
         self.options.rtsp_10_enabled = enabled;
         self
     }
 
-    /// Enable RTSP/2.0 (default: disabled).
+    /// Enable RTSP/2.0.
+    ///
+    /// The default is disabled.
     #[inline]
     pub fn enable_rtsp_20(mut self, enabled: bool) -> Self {
         self.options.rtsp_20_enabled = enabled;
@@ -262,6 +291,7 @@ struct ServerOptions {
     rtsp_20_enabled: bool,
     supported_features: Vec<Cow<'static, str>>,
     request_decoder_options: RequestDecoderOptions,
+    max_connections: Option<u32>,
     request_pipeline_depth: usize,
 }
 
@@ -269,13 +299,21 @@ impl ServerOptions {
     /// Create new server options with default values.
     #[inline]
     const fn new() -> Self {
+        let request_decoder_options = RequestDecoderOptions::new()
+            .accept_all_line_endings(false)
+            .max_line_length(Some(4096))
+            .max_header_field_length(Some(4096))
+            .max_header_fields(Some(64))
+            .max_body_size(Some(2 * 1024 * 1024));
+
         Self {
             read_timeout: Some(Duration::from_secs(60)),
             write_timeout: Some(Duration::from_secs(60)),
             rtsp_10_enabled: true,
             rtsp_20_enabled: false,
             supported_features: Vec::new(),
-            request_decoder_options: RequestDecoderOptions::new(),
+            request_decoder_options,
+            max_connections: Some(100),
             request_pipeline_depth: 10,
         }
     }
@@ -325,13 +363,30 @@ where
 
         let connection_handler = (make_connection_handler)(base_handler);
 
+        let semaphore = self
+            .options
+            .max_connections
+            .map(usize::try_from)
+            .map(|res| res.unwrap_or(usize::MAX))
+            .map(|max| Arc::new(Semaphore::new(max)));
+
         loop {
+            let permit = if let Some(semaphore) = semaphore.clone() {
+                Some(semaphore.acquire_owned().await.unwrap())
+            } else {
+                None
+            };
+
             let connection = self.acceptor.accept().await?;
 
             let session = connection_handler.handle_connection(connection);
 
             tokio::spawn(async move {
+                // We ignore any errors here. It's the connection handler's
+                // responsibility to handle them appropriately.
                 let _ = session.await;
+
+                std::mem::drop(permit);
             });
         }
     }

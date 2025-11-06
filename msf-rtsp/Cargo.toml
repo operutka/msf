@@ -1,0 +1,73 @@
+[package]
+name = "msf-rtsp"
+version = "0.1.0"
+authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
+edition = "2024"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/msf-rtsp/"
+repository = "https://github.com/operutka/msf"
+description = """
+Real Time Streaming Protocol (RTSP) for Rust.
+"""
+keywords = ["msf", "rtsp", "protocol"]
+
+[features]
+default = []
+abs-time = ["dep:chrono"]
+h264 = ["msf-rtp/h264", "msf-sdp/h264"]
+pcm = ["msf-rtp/pcm"]
+all-codecs = ["h264", "pcm"]
+server = ["dep:futures", "dep:tokio", "dep:trait-variant", "dep:ttpkit-url", "ttpkit-utils/io"]
+full = ["abs-time", "all-codecs", "server"]
+
+[dependencies]
+bytes = "1"
+str-reader = "0.1"
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["alloc"]
+optional = true
+
+[dependencies.futures]
+version = "0.3"
+optional = true
+
+[dependencies.msf-rtp]
+version = "0.2"
+path = "../msf-rtp"
+
+[dependencies.msf-sdp]
+version = "0.2"
+path = "../msf-sdp"
+
+[dependencies.tokio]
+version = "1"
+features = ["net", "rt"]
+optional = true
+
+[dependencies.tokio-util]
+version = "0.7"
+features = ["codec", "net"]
+
+[dependencies.trait-variant]
+version = "0.1"
+optional = true
+
+[dependencies.ttpkit]
+version = "0.1"
+features = ["tokio-codec"]
+
+[dependencies.ttpkit-url]
+version = "0.1"
+optional = true
+
+[dependencies.ttpkit-utils]
+version = "0.1"
+optional = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

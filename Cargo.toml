@@ -2,6 +2,7 @@
 members = [
     "msf-ice",
     "msf-rtp",
+    "msf-rtsp",
     "msf-sdp",
     "msf-srtp",
     "msf-stun",

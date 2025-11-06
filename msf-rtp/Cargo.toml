@@ -16,6 +16,7 @@ keywords = ["protocol", "network", "audio", "video", "media"]
 default = []
 h264 = ["msf-util/h264"]
 pcm = ["msf-sdp"]
+all-codecs = ["h264", "pcm"]
 
 [dependencies]
 bytes = "1"

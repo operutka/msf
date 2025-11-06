@@ -79,7 +79,7 @@ impl Display for H264Parameters {
         write!(f, "packetization-mode={}", self.packetization_mode)?;
 
         if let Some(profile_level_id) = self.profile_level_id.as_ref() {
-            write!(f, ";profile-level-id={}", profile_level_id)?;
+            write!(f, ";profile-level-id={profile_level_id}")?;
         }
 
         if let Some(mut parameter_sets) = self.parameter_sets.clone() {

@@ -1,10 +1,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "client", feature = "server"))]
 mod connection;
 
-#[cfg(feature = "server")]
+#[cfg(any(feature = "client", feature = "server"))]
 mod interleaved;
+
+#[cfg(feature = "client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "client")))]
+pub mod client;
 
 pub mod header;
 pub mod request;
@@ -14,8 +18,8 @@ pub mod response;
 #[cfg_attr(docsrs, doc(cfg(feature = "server")))]
 pub mod server;
 
-#[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
+#[cfg(any(feature = "client", feature = "server"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "client", feature = "server"))))]
 pub mod udp;
 
 use std::{
@@ -36,8 +40,8 @@ pub use msf_sdp as sdp;
 
 pub use ttpkit::{self, error::CodecError};
 
-#[cfg(feature = "server")]
-#[cfg_attr(docsrs, doc(cfg(feature = "server")))]
+#[cfg(any(feature = "client", feature = "server"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "client", feature = "server"))))]
 pub use ttpkit_url as url;
 
 pub use self::{

@@ -100,6 +100,16 @@ impl<I, O, E> BaseRtspConnection<I, O, E> {
         }
     }
 
+    /// Get an interleaved RTP stream for a given channel.
+    #[cfg(feature = "client")]
+    #[inline]
+    pub fn get_interleaved_channel(
+        &self,
+        channel: Option<u8>,
+    ) -> Result<InterleavedChannel, Error> {
+        self.connection_handle.get_interleaved_channel(channel)
+    }
+
     /// Get connection handle.
     #[cfg(feature = "server")]
     #[inline]

@@ -58,6 +58,7 @@ impl Acceptor for TcpListener {
 pub trait Connection: AsyncRead + AsyncWrite {
     type Info: ConnectionInfo;
 
+    /// Get connection info.
     fn info(&self) -> io::Result<Self::Info>;
 }
 

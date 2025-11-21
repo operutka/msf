@@ -22,7 +22,7 @@ pub struct AudioFrame {
 impl AudioFrame {
     /// Create a new audio frame with a given RTP timestamp.
     #[inline]
-    pub const fn new(data: Bytes, timestamp: u32) -> Self {
+    pub const fn new(timestamp: u32, data: Bytes) -> Self {
         Self { data, timestamp }
     }
 
@@ -249,7 +249,7 @@ impl Depacketizer for PCMDepacketizer {
         let timestamp = packet.timestamp();
         let data = packet.stripped_payload();
 
-        self.frame = Some(AudioFrame::new(data, timestamp));
+        self.frame = Some(AudioFrame::new(timestamp, data));
 
         Ok(())
     }

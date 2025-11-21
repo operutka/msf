@@ -32,7 +32,7 @@ impl ByePacket {
         let mut data = packet.stripped_payload();
 
         if data.len() < ((header.item_count() as usize) << 2) {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let mut sources = Vec::with_capacity(header.item_count() as usize);

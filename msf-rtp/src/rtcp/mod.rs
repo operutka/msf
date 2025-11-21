@@ -164,7 +164,7 @@ impl RtcpHeader {
     /// Decode an RTCP header.
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
         if data.len() < std::mem::size_of::<RawRtcpHeader>() {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let ptr = data.as_ptr() as *const RawRtcpHeader;
@@ -172,7 +172,7 @@ impl RtcpHeader {
         let raw = unsafe { ptr.read_unaligned() };
 
         if (raw.options >> 6) != 2 {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let res = Self {
@@ -298,17 +298,17 @@ impl RtcpPacket {
     /// Create a new RTCP packet from given parts.
     pub fn from_parts(header: RtcpHeader, payload: Bytes) -> Result<Self, InvalidInput> {
         if header.padding() {
-            let padding_len = payload.last().copied().ok_or(InvalidInput)? as usize;
+            let padding_len = payload.last().copied().ok_or_else(InvalidInput::new)? as usize;
 
             if padding_len == 0 || payload.len() < padding_len {
-                return Err(InvalidInput);
+                return Err(InvalidInput::new());
             }
         }
 
         let packet_len = header.packet_length();
 
         if packet_len != (payload.len() + 4) {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let res = Self { header, payload };
@@ -331,7 +331,7 @@ impl RtcpPacket {
         let payload_len = header.packet_length() - 4;
 
         if buffer.len() < payload_len {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let res = Self::from_parts(header, buffer.split_to(payload_len))?;

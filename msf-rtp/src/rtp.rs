@@ -43,7 +43,7 @@ impl RtpHeader {
         let mut buffer = data.clone();
 
         if buffer.len() < std::mem::size_of::<RawRtpHeader>() {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let ptr = buffer.as_ptr() as *const RawRtpHeader;
@@ -62,13 +62,13 @@ impl RtpHeader {
         buffer.advance(std::mem::size_of::<RawRtpHeader>());
 
         if (res.options >> 14) != 2 {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let csrc_count = ((res.options >> 8) & 0xf) as usize;
 
         if buffer.len() < (csrc_count << 2) {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         res.csrcs = Vec::with_capacity(csrc_count);
@@ -283,7 +283,7 @@ impl RtpHeaderExtension {
         let mut buffer = data.clone();
 
         if buffer.len() < std::mem::size_of::<RawHeaderExtension>() {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let ptr = buffer.as_ptr() as *const RawHeaderExtension;
@@ -296,7 +296,7 @@ impl RtpHeaderExtension {
         buffer.advance(std::mem::size_of::<RawHeaderExtension>());
 
         if buffer.len() < extension_length {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let res = Self {
@@ -400,10 +400,10 @@ impl RtpPacket {
     /// Create a new RTP packets from given parts.
     pub fn from_parts(header: RtpHeader, payload: Bytes) -> Result<Self, InvalidInput> {
         if header.padding() {
-            let padding_len = payload.last().copied().ok_or(InvalidInput)? as usize;
+            let padding_len = payload.last().copied().ok_or_else(InvalidInput::new)? as usize;
 
             if padding_len == 0 || payload.len() < padding_len {
-                return Err(InvalidInput);
+                return Err(InvalidInput::new());
             }
         }
 

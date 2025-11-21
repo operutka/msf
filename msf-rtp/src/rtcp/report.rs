@@ -46,7 +46,7 @@ impl ReportBlock {
     /// Decode a report block from given data.
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
         if data.len() < std::mem::size_of::<RawReportBlock>() {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let ptr = data.as_ptr() as *const RawReportBlock;
@@ -260,7 +260,7 @@ impl SenderReport {
         let mut data = packet.stripped_payload();
 
         if data.len() < std::mem::size_of::<RawSenderReportHeader>() {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let ptr = data.as_ptr() as *const RawSenderReportHeader;
@@ -435,7 +435,7 @@ impl ReceiverReport {
         let mut data = packet.stripped_payload();
 
         if data.len() < 4 {
-            return Err(InvalidInput);
+            return Err(InvalidInput::new());
         }
 
         let mut res = Self {

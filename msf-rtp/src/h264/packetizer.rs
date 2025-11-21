@@ -2,48 +2,14 @@ use std::collections::VecDeque;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::{InvalidInput, Packetizer, RtpPacket};
-
-/// RTP clock rate.
-pub const CLOCK_RATE: u32 = 90_000;
-
-/// Packetization mode used by the packetizer as defined in RFC 6184.
-pub const PACKETIZATION_MODE: u8 = 1;
-
-/// H.264 access unit.
-#[derive(Clone)]
-pub struct AccessUnit {
-    data: Bytes,
-    timestamp: u32,
-}
-
-impl AccessUnit {
-    /// Create a new access unit with a given RTP timestamp.
-    #[inline]
-    pub const fn new(data: Bytes, timestamp: u32) -> Self {
-        Self { data, timestamp }
-    }
-
-    /// Get the RTP timestamp.
-    #[inline]
-    pub fn timestamp(&self) -> u32 {
-        self.timestamp
-    }
-
-    /// Get the access unit data.
-    #[inline]
-    pub fn data(&self) -> &Bytes {
-        &self.data
-    }
-
-    /// Take the access unit data.
-    #[inline]
-    pub fn into_data(self) -> Bytes {
-        self.data
-    }
-}
+use crate::{h264::au::AccessUnit, Error, InvalidInput, Packetizer, RtpPacket};
 
 /// H.264 packetizer.
+///
+/// # Note
+/// The interleaved mode is not supported. The input frame sequence must be in
+/// the correct decoding order and the presentation timestamps must be
+/// monotonically increasing.
 pub struct H264Packetizer {
     payload_type: u8,
     ssrc: u32,
@@ -148,10 +114,10 @@ impl H264Packetizer {
 
 impl Packetizer for H264Packetizer {
     type Frame = AccessUnit;
-    type Error = InvalidInput;
+    type Error = Error;
 
     fn push(&mut self, unit: AccessUnit) -> Result<(), Self::Error> {
-        let timestamp = unit.timestamp();
+        let timestamp = unit.presentation_timestamp() as u32;
 
         let mut data = unit.into_data();
 
@@ -178,7 +144,7 @@ impl Packetizer for H264Packetizer {
             let nal_unit_type = nal_unit[0] & 0x1f;
 
             if nal_unit_type == 0 || nal_unit_type > 23 {
-                return Err(InvalidInput);
+                return Err(Error::from(InvalidInput::new()));
             } else if nal_unit.len() > self.fragmentation_threshold {
                 self.push_fragmented_nal_unit(timestamp, marker, nal_unit);
             } else {
@@ -202,5 +168,5 @@ impl Packetizer for H264Packetizer {
 
 /// Extract the next H.264 NAL unit.
 fn extract_nal_unit(data: &mut Bytes) -> Result<Option<Bytes>, InvalidInput> {
-    msf_util::h264::extract_nal_unit(data).map_err(|_| InvalidInput)
+    msf_util::h264::extract_nal_unit(data).map_err(|_| InvalidInput::new())
 }

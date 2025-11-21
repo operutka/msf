@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.0 (2025-11-21)
+
+* Switch to msf-rtp v0.4
+
 ## v0.3.0 (2025-11-06)
 
 * Switch to msf-rtp v0.3

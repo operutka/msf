@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.0 (2025-11-21)
+
+* Add Opus packetizer and depacketizer
+* Add H.264 depacketizer
+* Add detailed error messages
+
 ## v0.3.0 (2025-11-06)
 
 * Add RTP and RTCP channels for automatic frame decoding/encoding

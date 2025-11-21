@@ -1,6 +1,6 @@
 [package]
 name = "msf-rtsp"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2024"
 readme = "README.md"
@@ -16,8 +16,9 @@ keywords = ["msf", "rtsp", "protocol"]
 default = []
 abs-time = ["dep:chrono"]
 h264 = ["msf-rtp/h264", "msf-sdp/h264"]
+opus = ["msf-rtp/opus"]
 pcm = ["msf-rtp/pcm"]
-all-codecs = ["h264", "pcm"]
+all-codecs = ["h264", "opus", "pcm"]
 client = ["dep:futures", "dep:pin-project-lite", "dep:tokio", "dep:trait-variant", "dep:ttpkit-auth", "dep:ttpkit-url"]
 server = ["dep:futures", "dep:tokio", "dep:trait-variant", "dep:ttpkit-url", "ttpkit-utils/io"]
 full = ["abs-time", "all-codecs", "client", "server"]
@@ -37,7 +38,7 @@ version = "0.3"
 optional = true
 
 [dependencies.msf-rtp]
-version = "0.3"
+version = "0.4"
 path = "../msf-rtp"
 
 [dependencies.msf-sdp]

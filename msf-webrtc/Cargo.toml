@@ -1,6 +1,6 @@
 [package]
 name = "msf-webrtc"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -22,7 +22,7 @@ version = "0.2"
 path = "../msf-ice"
 
 [dependencies.msf-rtp]
-version = "0.3"
+version = "0.4"
 path = "../msf-rtp"
 
 [dependencies.msf-sdp]
@@ -31,5 +31,5 @@ optional = true
 path = "../msf-sdp"
 
 [dependencies.msf-srtp]
-version = "0.3"
+version = "0.4"
 path = "../msf-srtp"

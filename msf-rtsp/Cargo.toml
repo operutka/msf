@@ -67,7 +67,7 @@ version = "0.1"
 features = ["tokio-codec"]
 
 [dependencies.ttpkit-auth]
-version = "0.1"
+version = "0.2"
 optional = true
 
 [dependencies.ttpkit-url]

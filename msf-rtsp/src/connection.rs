@@ -358,10 +358,10 @@ impl<T, E> IncomingMessageDispatcherContext<T, E> {
     fn open_channel(&mut self, channel: Option<u8>) -> Result<IncomingDataChannel, Error> {
         let channel = channel.unwrap_or(self.next_channel_id);
 
-        if let Some(channel) = self.incoming_data_senders.get(&channel) {
-            if !channel.is_closed() {
-                return Err(Error::from_static_msg("channel already exists"));
-            }
+        if let Some(channel) = self.incoming_data_senders.get(&channel)
+            && !channel.is_closed()
+        {
+            return Err(Error::from_static_msg("channel already exists"));
         }
 
         self.next_channel_id = channel.max(self.next_channel_id) + 1;

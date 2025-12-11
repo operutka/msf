@@ -341,13 +341,13 @@ impl<'a> TransportParser<'a> for StringReader<'a> {
     fn parse_transport_address(&mut self) -> Result<TransportAddress, Error> {
         let addr = self.parse_rtsp_quoted_string()?;
 
-        if let Some((addr, port)) = addr.rsplit_once(':') {
-            if let Ok(port) = u16::from_str(port) {
-                if addr.is_empty() {
-                    return Ok(TransportAddress::Port(port));
-                } else if let Ok(addr) = IpAddr::from_str(addr) {
-                    return Ok(TransportAddress::SocketAddr(SocketAddr::from((addr, port))));
-                }
+        if let Some((addr, port)) = addr.rsplit_once(':')
+            && let Ok(port) = u16::from_str(port)
+        {
+            if addr.is_empty() {
+                return Ok(TransportAddress::Port(port));
+            } else if let Ok(addr) = IpAddr::from_str(addr) {
+                return Ok(TransportAddress::SocketAddr(SocketAddr::from((addr, port))));
             }
         }
 

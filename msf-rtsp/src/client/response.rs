@@ -167,12 +167,12 @@ impl ResponseDecoder {
             .map_err(|_| Error::from_static_msg("invalid response Content-Length value"))?
             .unwrap_or(0);
 
-        if let Some(max_body_size) = self.max_body_size {
-            if content_length > max_body_size {
-                return Err(Error::from_static_msg(
-                    "maximum response body size exceeded",
-                ));
-            }
+        if let Some(max_body_size) = self.max_body_size
+            && content_length > max_body_size
+        {
+            return Err(Error::from_static_msg(
+                "maximum response body size exceeded",
+            ));
         }
 
         self.header = Some(header);

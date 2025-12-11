@@ -257,12 +257,12 @@ impl RequestDecoder {
             .map_err(|_| BadRequest::from_static_msg("invalid Content-Length value"))?
             .unwrap_or(0);
 
-        if let Some(max_body_size) = self.max_body_size {
-            if content_length > max_body_size {
-                return Err(Error::from(BadRequest::from_static_msg(
-                    "maximum request body size exceeded",
-                )));
-            }
+        if let Some(max_body_size) = self.max_body_size
+            && content_length > max_body_size
+        {
+            return Err(Error::from(BadRequest::from_static_msg(
+                "maximum request body size exceeded",
+            )));
         }
 
         self.header = Some(header);

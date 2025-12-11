@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.0 (2025-12-11)
+
+* Switch to ttpkit-auth v0.2
+
 ## v0.2.0 (2025-11-21)
 
 * Switch to msf-rtp v0.4

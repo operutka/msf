@@ -1,6 +1,6 @@
 [package]
 name = "msf-sdp"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"

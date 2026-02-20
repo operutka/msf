@@ -1,16 +1,21 @@
 use std::{borrow::Borrow, ops::Deref, time::Instant};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use zerocopy::{
+    byteorder::network_endian::{U16, U32},
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+};
 
 use crate::InvalidInput;
 
 /// Helper struct.
-#[repr(C, packed)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawRtpHeader {
-    options: u16,
-    sequence_number: u16,
-    timestamp: u32,
-    ssrc: u32,
+    options: U16,
+    sequence_number: U16,
+    timestamp: U32,
+    ssrc: U32,
 }
 
 /// RTP header.
@@ -42,19 +47,15 @@ impl RtpHeader {
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
         let mut buffer = data.clone();
 
-        if buffer.len() < std::mem::size_of::<RawRtpHeader>() {
-            return Err(InvalidInput::new());
-        }
-
-        let ptr = buffer.as_ptr() as *const RawRtpHeader;
-
-        let raw = unsafe { ptr.read_unaligned() };
+        let (raw, _) = RawRtpHeader::ref_from_prefix(&buffer)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
         let mut res = Self {
-            options: u16::from_be(raw.options),
-            sequence_number: u16::from_be(raw.sequence_number),
-            timestamp: u32::from_be(raw.timestamp),
-            ssrc: u32::from_be(raw.ssrc),
+            options: raw.options.get(),
+            sequence_number: raw.sequence_number.get(),
+            timestamp: raw.timestamp.get(),
+            ssrc: raw.ssrc.get(),
             csrcs: Vec::new(),
             extension: None,
         };
@@ -67,15 +68,13 @@ impl RtpHeader {
 
         let csrc_count = ((res.options >> 8) & 0xf) as usize;
 
-        if buffer.len() < (csrc_count << 2) {
-            return Err(InvalidInput::new());
-        }
+        let (csrcs, _) = <[U32]>::ref_from_prefix_with_elems(&buffer, csrc_count)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
-        res.csrcs = Vec::with_capacity(csrc_count);
+        res.csrcs = csrcs.iter().copied().map(U32::get).collect();
 
-        for _ in 0..csrc_count {
-            res.csrcs.push(buffer.get_u32());
-        }
+        buffer.advance(csrc_count << 2);
 
         if (res.options & 0x1000) != 0 {
             res.extension = Some(RtpHeaderExtension::decode(&mut buffer)?);
@@ -91,17 +90,13 @@ impl RtpHeader {
         buf.reserve(self.raw_size());
 
         let raw = RawRtpHeader {
-            options: self.options.to_be(),
-            sequence_number: self.sequence_number.to_be(),
-            timestamp: self.timestamp.to_be(),
-            ssrc: self.ssrc.to_be(),
+            options: U16::new(self.options),
+            sequence_number: U16::new(self.sequence_number),
+            timestamp: U32::new(self.timestamp),
+            ssrc: U32::new(self.ssrc),
         };
 
-        let ptr = &raw as *const _ as *const u8;
-
-        let data = unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<RawRtpHeader>()) };
-
-        buf.extend_from_slice(data);
+        buf.extend_from_slice(raw.as_bytes());
 
         for csrc in &self.csrcs {
             buf.put_u32(*csrc);
@@ -255,10 +250,11 @@ impl Default for RtpHeader {
 }
 
 /// Helper struct.
-#[repr(C, packed)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawHeaderExtension {
-    misc: u16,
-    length: u16,
+    misc: U16,
+    length: U16,
 }
 
 /// RTP header extension.
@@ -282,16 +278,12 @@ impl RtpHeaderExtension {
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
         let mut buffer = data.clone();
 
-        if buffer.len() < std::mem::size_of::<RawHeaderExtension>() {
-            return Err(InvalidInput::new());
-        }
+        let (raw, _) = RawHeaderExtension::ref_from_prefix(&buffer)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
-        let ptr = buffer.as_ptr() as *const RawHeaderExtension;
-
-        let raw = unsafe { ptr.read_unaligned() };
-
-        let extension_length = (u16::from_be(raw.length) as usize) << 2;
-        let misc = u16::from_be(raw.misc);
+        let extension_length = (raw.length.get() as usize) << 2;
+        let misc = raw.misc.get();
 
         buffer.advance(std::mem::size_of::<RawHeaderExtension>());
 
@@ -316,16 +308,11 @@ impl RtpHeaderExtension {
         let length = (self.data.len() >> 2) as u16;
 
         let raw = RawHeaderExtension {
-            misc: self.misc.to_be(),
-            length: length.to_be(),
+            misc: U16::new(self.misc),
+            length: U16::new(length),
         };
 
-        let ptr = &raw as *const _ as *const u8;
-
-        let header =
-            unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<RawHeaderExtension>()) };
-
-        buf.extend_from_slice(header);
+        buf.extend_from_slice(raw.as_bytes());
         buf.extend_from_slice(&self.data);
     }
 

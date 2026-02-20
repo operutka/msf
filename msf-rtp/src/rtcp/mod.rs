@@ -11,6 +11,10 @@ mod stats;
 use std::ops::Deref;
 
 use bytes::{Buf, Bytes, BytesMut};
+use zerocopy::{
+    byteorder::network_endian::U16, FromBytes, Immutable, IntoBytes, KnownLayout, SizeError,
+    Unaligned,
+};
 
 use crate::InvalidInput;
 
@@ -132,11 +136,12 @@ impl From<u8> for RtcpPacketType {
 }
 
 /// Helper struct.
-#[repr(C, packed)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawRtcpHeader {
     options: u8,
     packet_type: u8,
-    length: u16,
+    length: U16,
 }
 
 /// RTCP header.
@@ -163,13 +168,9 @@ impl RtcpHeader {
 
     /// Decode an RTCP header.
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
-        if data.len() < std::mem::size_of::<RawRtcpHeader>() {
-            return Err(InvalidInput::new());
-        }
-
-        let ptr = data.as_ptr() as *const RawRtcpHeader;
-
-        let raw = unsafe { ptr.read_unaligned() };
+        let (raw, _) = RawRtcpHeader::ref_from_prefix(data)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
         if (raw.options >> 6) != 2 {
             return Err(InvalidInput::new());
@@ -178,7 +179,7 @@ impl RtcpHeader {
         let res = Self {
             options: raw.options,
             packet_type: raw.packet_type.into(),
-            length: u16::from_be(raw.length),
+            length: raw.length.get(),
         };
 
         data.advance(std::mem::size_of::<RawRtcpHeader>());
@@ -191,14 +192,10 @@ impl RtcpHeader {
         let raw = RawRtcpHeader {
             options: self.options,
             packet_type: self.packet_type.raw_id(),
-            length: self.length.to_be(),
+            length: U16::new(self.length),
         };
 
-        let ptr = &raw as *const _ as *const u8;
-
-        let data = unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<RawRtcpHeader>()) };
-
-        buf.extend_from_slice(data);
+        buf.extend_from_slice(raw.as_bytes());
     }
 
     /// Check if the padding bit is set.

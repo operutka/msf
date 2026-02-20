@@ -40,6 +40,10 @@ path = "../msf-util"
 version = "1"
 features = ["rt", "time"]
 
+[dependencies.zerocopy]
+version = "0.8"
+features = ["derive"]
+
 [dev-dependencies.tokio]
 version = "1"
 features = ["full"]

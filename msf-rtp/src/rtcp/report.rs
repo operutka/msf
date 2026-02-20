@@ -1,18 +1,23 @@
 use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use zerocopy::{
+    byteorder::network_endian::{U32, U64},
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+};
 
 use crate::{InvalidInput, RtcpPacket, RtcpPacketType};
 
 /// Helper struct.
-#[repr(C, packed)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawReportBlock {
-    ssrc: u32,
-    loss: u32,
-    extended_sequence_number: u32,
-    jitter: u32,
-    last_sr_timestamp: u32,
-    delay_since_last_sr: u32,
+    ssrc: U32,
+    loss: U32,
+    extended_sequence_number: U32,
+    jitter: U32,
+    last_sr_timestamp: U32,
+    delay_since_last_sr: U32,
 }
 
 /// Sender/receiver report block.
@@ -45,21 +50,17 @@ impl ReportBlock {
 
     /// Decode a report block from given data.
     pub fn decode(data: &mut Bytes) -> Result<Self, InvalidInput> {
-        if data.len() < std::mem::size_of::<RawReportBlock>() {
-            return Err(InvalidInput::new());
-        }
-
-        let ptr = data.as_ptr() as *const RawReportBlock;
-
-        let raw = unsafe { ptr.read_unaligned() };
+        let (raw, _) = RawReportBlock::ref_from_prefix(data)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
         let res = Self {
-            ssrc: u32::from_be(raw.ssrc),
-            loss: u32::from_be(raw.loss),
-            extended_sequence_number: u32::from_be(raw.extended_sequence_number),
-            jitter: u32::from_be(raw.jitter),
-            last_sr_timestamp: u32::from_be(raw.last_sr_timestamp),
-            delay_since_last_sr: u32::from_be(raw.delay_since_last_sr),
+            ssrc: raw.ssrc.get(),
+            loss: raw.loss.get(),
+            extended_sequence_number: raw.extended_sequence_number.get(),
+            jitter: raw.jitter.get(),
+            last_sr_timestamp: raw.last_sr_timestamp.get(),
+            delay_since_last_sr: raw.delay_since_last_sr.get(),
         };
 
         data.advance(std::mem::size_of::<RawReportBlock>());
@@ -70,20 +71,15 @@ impl ReportBlock {
     /// Encode the report block.
     pub fn encode(&self, buf: &mut BytesMut) {
         let raw = RawReportBlock {
-            ssrc: self.ssrc.to_be(),
-            loss: self.loss.to_be(),
-            extended_sequence_number: self.extended_sequence_number.to_be(),
-            jitter: self.jitter.to_be(),
-            last_sr_timestamp: self.last_sr_timestamp.to_be(),
-            delay_since_last_sr: self.delay_since_last_sr.to_be(),
+            ssrc: U32::new(self.ssrc),
+            loss: U32::new(self.loss),
+            extended_sequence_number: U32::new(self.extended_sequence_number),
+            jitter: U32::new(self.jitter),
+            last_sr_timestamp: U32::new(self.last_sr_timestamp),
+            delay_since_last_sr: U32::new(self.delay_since_last_sr),
         };
 
-        let ptr = &raw as *const _ as *const u8;
-
-        let data =
-            unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<RawReportBlock>()) };
-
-        buf.extend_from_slice(data);
+        buf.extend_from_slice(raw.as_bytes());
     }
 
     /// Get SSRC.
@@ -219,13 +215,14 @@ impl ReportBlock {
 }
 
 /// Helper struct.
-#[repr(C, packed)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawSenderReportHeader {
-    sender_ssrc: u32,
-    ntp_timestamp: u64,
-    rtp_timestamp: u32,
-    packet_count: u32,
-    octet_count: u32,
+    sender_ssrc: U32,
+    ntp_timestamp: U64,
+    rtp_timestamp: U32,
+    packet_count: U32,
+    octet_count: U32,
 }
 
 /// Sender report.
@@ -259,20 +256,16 @@ impl SenderReport {
 
         let mut data = packet.stripped_payload();
 
-        if data.len() < std::mem::size_of::<RawSenderReportHeader>() {
-            return Err(InvalidInput::new());
-        }
-
-        let ptr = data.as_ptr() as *const RawSenderReportHeader;
-
-        let raw = unsafe { ptr.read_unaligned() };
+        let (raw, _) = RawSenderReportHeader::ref_from_prefix(&data)
+            .map_err(SizeError::from)
+            .map_err(|_| InvalidInput::new())?;
 
         let mut res = Self {
-            sender_ssrc: u32::from_be(raw.sender_ssrc),
-            ntp_timestamp: u64::from_be(raw.ntp_timestamp),
-            rtp_timestamp: u32::from_be(raw.rtp_timestamp),
-            packet_count: u32::from_be(raw.packet_count),
-            octet_count: u32::from_be(raw.octet_count),
+            sender_ssrc: raw.sender_ssrc.get(),
+            ntp_timestamp: raw.ntp_timestamp.get(),
+            rtp_timestamp: raw.rtp_timestamp.get(),
+            packet_count: raw.packet_count.get(),
+            octet_count: raw.octet_count.get(),
             report_blocks: Vec::with_capacity(header.item_count() as usize),
         };
 
@@ -290,20 +283,14 @@ impl SenderReport {
         let mut payload = BytesMut::with_capacity(self.raw_size());
 
         let raw = RawSenderReportHeader {
-            sender_ssrc: self.sender_ssrc.to_be(),
-            ntp_timestamp: self.ntp_timestamp.to_be(),
-            rtp_timestamp: self.rtp_timestamp.to_be(),
-            packet_count: self.packet_count.to_be(),
-            octet_count: self.octet_count.to_be(),
+            sender_ssrc: U32::new(self.sender_ssrc),
+            ntp_timestamp: U64::new(self.ntp_timestamp),
+            rtp_timestamp: U32::new(self.rtp_timestamp),
+            packet_count: U32::new(self.packet_count),
+            octet_count: U32::new(self.octet_count),
         };
 
-        let ptr = &raw as *const _ as *const u8;
-
-        let data = unsafe {
-            std::slice::from_raw_parts(ptr, std::mem::size_of::<RawSenderReportHeader>())
-        };
-
-        payload.extend_from_slice(data);
+        payload.extend_from_slice(raw.as_bytes());
 
         for block in &self.report_blocks {
             block.encode(&mut payload);

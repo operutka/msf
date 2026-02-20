@@ -1,4 +1,8 @@
 use bytes::{Buf, Bytes, BytesMut};
+use zerocopy::{
+    byteorder::network_endian::{U16, U32},
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+};
 
 use crate::{
     depacketizer::Depacketizer,
@@ -620,30 +624,19 @@ impl AsRef<[u8]> for NalUnit {
 }
 
 /// MTAP16 entity header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct Mtap16RawHeader {
-    nal_unit_size: u16,
+    nal_unit_size: U16,
     dond: u8,
-    ts_offset: u16,
+    ts_offset: U16,
 }
 
 impl Mtap16RawHeader {
     /// Parse an MTAP16 entity header from given data.
     fn from_bytes(data: &mut Bytes) -> Result<Self, Error> {
-        if data.len() < std::mem::size_of::<Self>() {
-            return Err(Error::from_static_msg("invalid MTAP16 packet"));
-        }
-
-        let ptr = data.as_ptr() as *const Self;
-
-        let hdr = unsafe { ptr.read_unaligned() };
-
-        let res = Self {
-            nal_unit_size: u16::from_be(hdr.nal_unit_size),
-            dond: hdr.dond,
-            ts_offset: u16::from_be(hdr.ts_offset),
-        };
+        let (res, _) = Self::read_from_prefix(data)
+            .map_err(|_| Error::from_static_msg("invalid MTAP16 packet"))?;
 
         data.advance(std::mem::size_of::<Self>());
 
@@ -652,7 +645,7 @@ impl Mtap16RawHeader {
 
     /// Get size of the NAL unit.
     fn nal_unit_size(self) -> usize {
-        self.nal_unit_size as usize
+        self.nal_unit_size.get() as usize
     }
 
     /// Get DOND.
@@ -662,33 +655,23 @@ impl Mtap16RawHeader {
 
     /// Get RTP timestamp offset.
     fn ts_offset(self) -> u32 {
-        self.ts_offset as u32
+        self.ts_offset.get() as u32
     }
 }
 
 /// MTAP24 entity header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct Mtap24RawHeader {
-    nal_unit_size: u16,
-    dond_ts_offset: u32,
+    nal_unit_size: U16,
+    dond_ts_offset: U32,
 }
 
 impl Mtap24RawHeader {
     /// Parse an MTAP24 entity header from given data.
     fn from_bytes(data: &mut Bytes) -> Result<Self, Error> {
-        if data.len() < std::mem::size_of::<Self>() {
-            return Err(Error::from_static_msg("invalid MTAP24 packet"));
-        }
-
-        let ptr = data.as_ptr() as *const Self;
-
-        let hdr = unsafe { ptr.read_unaligned() };
-
-        let res = Self {
-            nal_unit_size: u16::from_be(hdr.nal_unit_size),
-            dond_ts_offset: u32::from_be(hdr.dond_ts_offset),
-        };
+        let (res, _) = Self::read_from_prefix(data)
+            .map_err(|_| Error::from_static_msg("invalid MTAP24 packet"))?;
 
         data.advance(std::mem::size_of::<Self>());
 
@@ -697,17 +680,17 @@ impl Mtap24RawHeader {
 
     /// Get size of the NAL unit.
     fn nal_unit_size(self) -> usize {
-        self.nal_unit_size as usize
+        self.nal_unit_size.get() as usize
     }
 
     /// Get DOND.
     fn dond(self) -> u16 {
-        (self.dond_ts_offset >> 24) as u16
+        (self.dond_ts_offset.get() >> 24) as u16
     }
 
     /// Get RTP timestamp offset.
     fn ts_offset(self) -> u32 {
-        self.dond_ts_offset & 0x00ff_ffff
+        self.dond_ts_offset.get() & 0x00ff_ffff
     }
 }
 

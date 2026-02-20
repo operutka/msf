@@ -597,37 +597,6 @@ impl From<RtpPacket> for InternalRtpPacket {
     }
 }
 
-/// H.264 NAL unit types.
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum NalUnitType {
-    NonIDR,
-    IDR,
-    PartitionA,
-    PartitionB,
-    PartitionC,
-    SEI,
-    SPS,
-    PPS,
-    Other(u8),
-}
-
-impl From<u8> for NalUnitType {
-    fn from(id: u8) -> Self {
-        match id & 0x1f {
-            0x01 => Self::NonIDR,
-            0x02 => Self::PartitionA,
-            0x03 => Self::PartitionB,
-            0x04 => Self::PartitionC,
-            0x05 => Self::IDR,
-            0x06 => Self::SEI,
-            0x07 => Self::SPS,
-            0x08 => Self::PPS,
-            other => Self::Other(other),
-        }
-    }
-}
-
 /// NAL unit with the corresponding extended timestamp.
 struct NalUnit {
     rtp_timestamp: u64,

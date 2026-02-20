@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.1 (2026-02-20)
+
+* Harden RTP packet serialization and deserialization
+* Update dependencies
+
 ## v0.4.0 (2025-11-21)
 
 * Add Opus packetizer and depacketizer

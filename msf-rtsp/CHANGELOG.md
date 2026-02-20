@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1 (2026-02-20)
+
+* Extend the BadRequest and BadGateway APIs
+* Harden interleaved header serialization and deserialization
+
 ## v0.3.0 (2025-12-11)
 
 * Switch to ttpkit-auth v0.2

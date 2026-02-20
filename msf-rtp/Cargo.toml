@@ -24,7 +24,7 @@ bytes = "1"
 futures = "0.3"
 lru = "0.16"
 pin-project-lite = "0.2"
-rand = "0.9"
+rand = "0.10"
 
 [dependencies.msf-sdp]
 version = "0.2"

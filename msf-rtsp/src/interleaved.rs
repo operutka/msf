@@ -1,5 +1,8 @@
 use bytes::{Buf, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, byteorder::network_endian::U16,
+};
 
 use crate::Error;
 
@@ -132,12 +135,12 @@ where
 }
 
 /// Header of interleaved channel data.
-#[derive(Debug, Copy, Clone)]
-#[repr(C, packed)]
+#[derive(Debug, Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct ChannelDataHeader {
     dollar: u8,
     channel: u8,
-    size: u16,
+    size: U16,
 }
 
 impl ChannelDataHeader {
@@ -146,48 +149,26 @@ impl ChannelDataHeader {
         Self {
             dollar: 0x24,
             channel,
-            size,
+            size: U16::new(size),
         }
     }
 
     /// Decode header from given data.
     fn decode(data: &[u8]) -> Result<Option<Self>, Error> {
-        if data.len() < std::mem::size_of::<Self>() {
+        let Ok((res, _)) = Self::read_from_prefix(data) else {
             return Ok(None);
-        }
-
-        let ptr = data.as_ptr() as *const Self;
-
-        let be_header = unsafe { ptr.read_unaligned() };
-
-        if be_header.dollar != 0x24 {
-            return Err(Error::from_static_msg("invalid interleaved data header"));
-        }
-
-        let res = Self {
-            dollar: be_header.dollar,
-            channel: be_header.channel,
-            size: u16::from_be(be_header.size),
         };
 
-        Ok(Some(res))
+        if res.dollar == 0x24 {
+            Ok(Some(res))
+        } else {
+            Err(Error::from_static_msg("invalid interleaved data header"))
+        }
     }
 
     /// Encode the header.
     fn encode(&self, buf: &mut BytesMut) {
-        let be_header = Self {
-            dollar: self.dollar,
-            channel: self.channel,
-            size: self.size.to_be(),
-        };
-
-        let ptr = &be_header as *const Self;
-
-        let data = unsafe {
-            std::slice::from_raw_parts(ptr as *const u8, std::mem::size_of_val(&be_header))
-        };
-
-        buf.extend_from_slice(data);
+        buf.extend_from_slice(self.as_bytes());
     }
 }
 
@@ -243,7 +224,7 @@ impl Decoder for ChannelDataCodec {
 
         let header_size = std::mem::size_of_val(&header);
 
-        let target_size = header_size + header.size as usize;
+        let target_size = header_size + header.size.get() as usize;
 
         if data.len() < target_size {
             return Ok(None);

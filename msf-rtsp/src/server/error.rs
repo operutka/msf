@@ -43,6 +43,16 @@ pub struct BadRequest {
 
 impl BadRequest {
     /// Create a new Bad Request error with a given message.
+    pub fn from_msg<T>(msg: T) -> Self
+    where
+        T: Into<String>,
+    {
+        Self {
+            msg: Cow::Owned(msg.into()),
+        }
+    }
+
+    /// Create a new Bad Request error with a given message.
     #[inline]
     pub const fn from_static_msg(msg: &'static str) -> Self {
         Self {
@@ -300,10 +310,31 @@ pub struct BadGateway {
 
 impl BadGateway {
     /// Create a new Bad Gateway error with a given message.
+    pub fn from_msg<T>(msg: T) -> Self
+    where
+        T: Into<String>,
+    {
+        Self {
+            inner: Error::from_msg(msg),
+        }
+    }
+
+    /// Create a new Bad Gateway error with a given message.
     #[inline]
     pub const fn from_static_msg(msg: &'static str) -> Self {
         Self {
             inner: Error::from_static_msg(msg),
+        }
+    }
+
+    /// Create a new Bad Gateway error with a given message and cause.
+    pub fn from_msg_and_cause<T, E>(msg: T, cause: E) -> Self
+    where
+        T: Into<String>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self {
+            inner: Error::from_msg_and_cause(msg, cause),
         }
     }
 

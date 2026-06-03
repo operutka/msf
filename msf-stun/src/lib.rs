@@ -10,7 +10,7 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use crc::{Crc, CRC_32_ISO_HDLC};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
 use self::{attribute::AttributeError, writer::MessageWriter};

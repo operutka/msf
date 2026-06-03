@@ -22,7 +22,7 @@ all-codecs = ["h264", "opus", "pcm"]
 [dependencies]
 bytes = "1"
 futures = "0.3"
-lru = "0.16"
+lru = "0.18"
 pin-project-lite = "0.2"
 rand = "0.10"
 

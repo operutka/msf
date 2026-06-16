@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.0 (2026-MM-DD)
+
+* Redesign message parsing and serialization
+
 ## v0.1.1 (2023-10-03)
 
 * Update dependencies

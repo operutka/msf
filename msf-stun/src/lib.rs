@@ -1,31 +1,37 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod attribute;
 mod writer;
 
 use std::{
-    borrow::Cow,
     error::Error,
     fmt::{self, Display, Formatter},
     net::SocketAddr,
 };
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, Bytes, BytesMut};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
+use zerocopy::{
+    network_endian::{U16, U32},
+    FromBytes, Immutable, KnownLayout, Unaligned,
+};
 
-use self::{attribute::AttributeError, writer::MessageWriter};
+use self::{attribute::AttributeError, writer::MessageBuffer};
 
-pub use self::attribute::{Attribute, Attributes};
+pub use self::attribute::{Attribute, Attributes, ErrorCode, Text};
 
 const RFC_5389_MAGIC_COOKIE: u32 = 0x2112a442;
 
 /// Message class.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[repr(u16)]
 pub enum MessageClass {
-    Request,
-    Indication,
-    Success,
-    Error,
+    Request = 0x0000,
+    Indication = 0x0010,
+    Success = 0x0100,
+    Error = 0x0110,
 }
 
 impl MessageClass {
@@ -42,12 +48,7 @@ impl MessageClass {
 
     /// Get the message type bits that correspond to this message class.
     fn into_message_type(self) -> u16 {
-        match self {
-            Self::Request => 0x0000,
-            Self::Indication => 0x0010,
-            Self::Success => 0x0100,
-            Self::Error => 0x0110,
-        }
+        self as u16
     }
 }
 
@@ -83,44 +84,37 @@ type TransactionID = [u8; 12];
 struct InvalidMessageHeader;
 
 /// Message header.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
 struct MessageHeader {
-    message_type: u16,
-    message_length: u16,
-    magic_cookie: u32,
+    message_type: U16,
+    message_length: U16,
+    magic_cookie: U32,
     transaction_id: TransactionID,
 }
 
 impl MessageHeader {
     /// Consume message header from a given buffer and parse it.
     fn from_bytes(data: &mut Bytes) -> Result<Self, InvalidMessageHeader> {
-        if data.len() < 20 {
-            return Err(InvalidMessageHeader);
-        }
+        let res = Self::read_from_prefix(data)
+            .ok()
+            .map(|(h, _)| h)
+            .filter(|h| (h.message_type.get() & 0xc000) == 0)
+            .ok_or(InvalidMessageHeader)?;
 
-        let mut res = Self {
-            message_type: data.get_u16(),
-            message_length: data.get_u16(),
-            magic_cookie: data.get_u32(),
-            transaction_id: TransactionID::default(),
-        };
+        data.advance(std::mem::size_of_val(&res));
 
-        data.copy_to_slice(&mut res.transaction_id);
-
-        if (res.message_type & 0xc000) == 0 {
-            Ok(res)
-        } else {
-            Err(InvalidMessageHeader)
-        }
+        Ok(res)
     }
 
     /// Get the message class.
     fn message_class(&self) -> MessageClass {
-        MessageClass::from_message_type(self.message_type)
+        MessageClass::from_message_type(self.message_type.get())
     }
 
     /// Get the method.
     fn method(&self) -> Method {
-        Method::from_message_type(self.message_type)
+        Method::from_message_type(self.message_type.get())
     }
 }
 
@@ -194,7 +188,7 @@ impl Message {
 
         let header = MessageHeader::from_bytes(&mut frame)?;
 
-        let len = header.message_length as usize;
+        let len = header.message_length.get() as usize;
 
         if (len & 3) != 0 || frame.len() < len {
             return Err(InvalidMessage::InvalidHeader);
@@ -204,7 +198,7 @@ impl Message {
             original: original.split_to(20 + len),
             class: header.message_class(),
             method: header.method(),
-            magic_cookie: header.magic_cookie,
+            magic_cookie: header.magic_cookie.get(),
             transaction_id: header.transaction_id,
             attributes: Attributes::empty(),
             unknown_attributes: Vec::new(),
@@ -410,11 +404,17 @@ pub struct MessageBuilder {
 impl MessageBuilder {
     /// Create a new message builder.
     #[inline]
-    pub const fn new(class: MessageClass, method: Method, transaction_id: [u8; 12]) -> Self {
+    const fn new_internal(
+        class: MessageClass,
+        method: Method,
+        magic_cookie: u32,
+        transaction_id: [u8; 12],
+        error_code: Option<ErrorCode>,
+    ) -> Self {
         Self {
             class,
             method,
-            magic_cookie: RFC_5389_MAGIC_COOKIE,
+            magic_cookie,
             transaction_id,
 
             mapped_address: None,
@@ -422,7 +422,7 @@ impl MessageBuilder {
             username: None,
             message_integrity: None,
             fingerprint: false,
-            error_code: None,
+            error_code,
             realm: None,
             nonce: None,
             unknown_attributes: None,
@@ -443,34 +443,58 @@ impl MessageBuilder {
         }
     }
 
+    /// Create a new message builder.
+    #[inline]
+    pub const fn new(class: MessageClass, method: Method, transaction_id: [u8; 12]) -> Self {
+        Self::new_internal(class, method, RFC_5389_MAGIC_COOKIE, transaction_id, None)
+    }
+
     /// Create a new message builder for a STUN binding request.
     #[inline]
-    pub fn binding_request(transaction_id: [u8; 12]) -> Self {
-        Self::new(MessageClass::Request, Method::Binding, transaction_id)
+    pub const fn binding_request(transaction_id: [u8; 12]) -> Self {
+        Self::new_internal(
+            MessageClass::Request,
+            Method::Binding,
+            RFC_5389_MAGIC_COOKIE,
+            transaction_id,
+            None,
+        )
     }
 
     /// Create a new message builder for a STUN response.
     #[inline]
-    pub fn response(class: MessageClass, request: &Message) -> Self {
-        let mut res = Self::new(class, request.method, request.transaction_id);
-
-        res.magic_cookie(request.magic_cookie);
-        res
+    pub const fn response(class: MessageClass, request: &Message) -> Self {
+        Self::new_internal(
+            class,
+            request.method,
+            request.magic_cookie,
+            request.transaction_id,
+            None,
+        )
     }
 
     /// Create a new message builder for a success STUN response.
     #[inline]
-    pub fn success_response(request: &Message) -> Self {
-        Self::response(MessageClass::Success, request)
+    pub const fn success_response(request: &Message) -> Self {
+        Self::new_internal(
+            MessageClass::Success,
+            request.method,
+            request.magic_cookie,
+            request.transaction_id,
+            None,
+        )
     }
 
     /// Create a new message builder for an error STUN response.
     #[inline]
-    pub fn error_response(request: &Message, error_code: ErrorCode) -> Self {
-        let mut res = Self::response(MessageClass::Error, request);
-
-        res.error_code(error_code);
-        res
+    pub const fn error_response(request: &Message, error_code: ErrorCode) -> Self {
+        Self::new_internal(
+            MessageClass::Error,
+            request.method,
+            request.magic_cookie,
+            request.transaction_id,
+            Some(error_code),
+        )
     }
 
     /// Set message class.
@@ -531,17 +555,15 @@ impl MessageBuilder {
     }
 
     /// Set username.
-    #[inline]
     pub fn username<T>(&mut self, username: T) -> &mut Self
     where
-        T: ToString,
+        T: Into<String>,
     {
-        self.username = Some(username.to_string());
+        self.username = Some(username.into());
         self
     }
 
     /// Enable message integrity and use a given key.
-    #[inline]
     pub fn message_integrity<T>(&mut self, key: T) -> &mut Self
     where
         T: Into<Vec<u8>>,
@@ -565,27 +587,24 @@ impl MessageBuilder {
     }
 
     /// Set realm.
-    #[inline]
     pub fn realm<T>(&mut self, realm: T) -> &mut Self
     where
-        T: ToString,
+        T: Into<String>,
     {
-        self.realm = Some(realm.to_string());
+        self.realm = Some(realm.into());
         self
     }
 
     /// Set nonce.
-    #[inline]
     pub fn nonce<T>(&mut self, nonce: T) -> &mut Self
     where
-        T: ToString,
+        T: Into<String>,
     {
-        self.nonce = Some(nonce.to_string());
+        self.nonce = Some(nonce.into());
         self
     }
 
     /// Set unknown attributes.
-    #[inline]
     pub fn unknown_attributes<T>(&mut self, unknown_attributes: T) -> &mut Self
     where
         T: Into<Vec<u16>>,
@@ -595,12 +614,11 @@ impl MessageBuilder {
     }
 
     /// Set software.
-    #[inline]
     pub fn software<T>(&mut self, software: T) -> &mut Self
     where
-        T: ToString,
+        T: Into<String>,
     {
-        self.software = Some(software.to_string());
+        self.software = Some(software.into());
         self
     }
 
@@ -613,6 +631,7 @@ impl MessageBuilder {
 
     /// Set ICE candidate priority.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn priority(&mut self, priority: u32) -> &mut Self {
         self.priority = Some(priority);
@@ -621,6 +640,7 @@ impl MessageBuilder {
 
     /// Set the use candidate ICE flag.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn use_candidate(&mut self, enable: bool) -> &mut Self {
         self.use_candidate = enable;
@@ -629,6 +649,7 @@ impl MessageBuilder {
 
     /// Set the ICE controlled attribute.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn ice_controlled(&mut self, n: u64) -> &mut Self {
         self.ice_controlled = Some(n);
@@ -637,16 +658,19 @@ impl MessageBuilder {
 
     /// Set the ICE controlling attribute.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn ice_controlling(&mut self, n: u64) -> &mut Self {
         self.ice_controlling = Some(n);
         self
     }
 
-    /// Finalize the message.
-    pub fn build(&self) -> Bytes {
+    /// Serialize the message into a given buffer.
+    pub fn serialize(&self, buffer: &mut BytesMut) {
+        let mut buffer = MessageBuffer::new(buffer);
+
         // create a buffer with an empty header
-        let mut writer = MessageWriter::new(
+        let mut writer = buffer.create_message(
             self.class,
             self.method,
             self.magic_cookie,
@@ -716,67 +740,18 @@ impl MessageBuilder {
             writer.put_fingerprint();
         }
 
-        writer.finalize()
+        writer.finalize();
+    }
+
+    /// Finalize the message and return it as `Bytes`.
+    pub fn build(&self) -> Bytes {
+        let mut res = BytesMut::new();
+
+        self.serialize(&mut res);
+
+        res.freeze()
     }
 }
-
-/// Error code and error message.
-#[derive(Clone)]
-pub struct ErrorCode {
-    code: u16,
-    msg: Cow<'static, str>,
-}
-
-impl ErrorCode {
-    pub const BAD_REQUEST: Self = Self::new_static(400, "Bad Request");
-    pub const UNAUTHORIZED: Self = Self::new_static(401, "Unauthorized");
-    pub const UNKNOWN_ATTRIBUTES: Self = Self::new_static(420, "Unknown Attributes");
-
-    #[cfg(feature = "ice")]
-    pub const ROLE_CONFLICT: Self = Self::new_static(487, "Role Conflict");
-
-    /// Create a new error code with a given code and a message.
-    #[inline]
-    pub const fn new_static(code: u16, msg: &'static str) -> Self {
-        Self {
-            code,
-            msg: Cow::Borrowed(msg),
-        }
-    }
-
-    /// Create a new error code with a given code and a message.
-    #[inline]
-    pub fn new<T>(code: u16, msg: T) -> Self
-    where
-        T: ToString,
-    {
-        Self {
-            code,
-            msg: Cow::Owned(msg.to_string()),
-        }
-    }
-
-    /// Get the error code.
-    #[inline]
-    pub fn code(&self) -> u16 {
-        self.code
-    }
-
-    /// Get the error message.
-    #[inline]
-    pub fn message(&self) -> &str {
-        &self.msg
-    }
-}
-
-impl PartialEq for ErrorCode {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.code == other.code
-    }
-}
-
-impl Eq for ErrorCode {}
 
 /// Take the message header bytes from a given STUN message.
 fn take_message_header(msg: &[u8]) -> [u8; 20] {

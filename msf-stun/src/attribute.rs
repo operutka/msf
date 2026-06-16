@@ -1,11 +1,10 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::Deref,
 };
 
 use bytes::{Buf, Bytes};
-
-use crate::ErrorCode;
+use zerocopy::{network_endian::U16, FromBytes, Immutable, KnownLayout, SizeError, Unaligned};
 
 pub const ATTR_TYPE_MAPPED_ADDRESS: u16 = 0x0001;
 pub const ATTR_TYPE_XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -38,34 +37,32 @@ pub enum AttributeError {
 }
 
 /// Attribute header.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
 struct AttributeHeader {
-    attribute_type: u16,
-    attribute_length: u16,
+    attribute_type: U16,
+    attribute_length: U16,
 }
 
 impl AttributeHeader {
     /// Consumer attribute header from a given buffer and parse it.
     fn from_bytes(data: &mut Bytes) -> Result<Self, AttributeError> {
-        if data.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
+        let (res, _) =
+            Self::read_from_prefix(data).map_err(|_| AttributeError::InvalidAttribute)?;
 
-        let res = Self {
-            attribute_type: data.get_u16(),
-            attribute_length: data.get_u16(),
-        };
+        data.advance(std::mem::size_of_val(&res));
 
         Ok(res)
     }
 
     /// Get length of the attribute value.
     fn value_length(&self) -> usize {
-        self.attribute_length as usize
+        self.attribute_length.get() as usize
     }
 
     /// Get length of the attribute value including padding.
     fn padded_value_length(&self) -> usize {
-        (self.attribute_length as usize + 3) & !3
+        (self.attribute_length.get() as usize + 3) & !3
     }
 }
 
@@ -74,26 +71,30 @@ impl AttributeHeader {
 pub enum Attribute {
     MappedAddress(SocketAddr),
     XorMappedAddress(SocketAddr),
-    Username(String),
+    Username(Text),
     MessageIntegrity([u8; 20]),
     Fingerprint(u32),
     ErrorCode(ErrorCode),
-    Realm(String),
-    Nonce(String),
+    Realm(Text),
+    Nonce(Text),
     UnknownAttributes(Vec<u16>),
-    Software(String),
+    Software(Text),
     AlternateServer(SocketAddr),
 
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     Priority(u32),
 
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     UseCandidate,
 
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     ICEControlled(u64),
 
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     ICEControlling(u64),
 }
 
@@ -113,7 +114,7 @@ impl Attribute {
 
         data.advance(header.padded_value_length());
 
-        let res = match header.attribute_type {
+        let res = match header.attribute_type.get() {
             ATTR_TYPE_MAPPED_ADDRESS => Self::mapped_address_from_bytes(&mut value)?,
             ATTR_TYPE_XOR_MAPPED_ADDRESS => {
                 Self::xor_mapped_address_from_bytes(&mut value, long_transaction_id)?
@@ -152,32 +153,9 @@ impl Attribute {
 
     /// Parse mapped address.
     fn mapped_address_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        value.advance(1);
-
-        let family = value.get_u8();
-        let port = value.get_u16();
-
-        let expected = match family {
-            1 => 4,
-            2 => 16,
-            _ => return Err(AttributeError::InvalidAttribute),
-        };
-
-        if value.len() < expected {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        let addr = match family {
-            1 => IpAddr::from(Ipv4Addr::from(value.get_u32())),
-            2 => IpAddr::from(Ipv6Addr::from(value.get_u128())),
-            _ => unreachable!(),
-        };
-
-        Ok(Self::MappedAddress(SocketAddr::from((addr, port))))
+        MappedAddr::from_bytes(value)
+            .map(SocketAddr::from)
+            .map(Self::MappedAddress)
     }
 
     /// Parse XOR mapped address.
@@ -185,12 +163,6 @@ impl Attribute {
         value: &mut Bytes,
         long_transaction_id: [u8; 16],
     ) -> Result<Self, AttributeError> {
-        if value.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        value.advance(1);
-
         let mut magic_cookie = [0u8; 4];
 
         magic_cookie.copy_from_slice(&long_transaction_id[..4]);
@@ -199,87 +171,62 @@ impl Attribute {
         let u32_xor_bits = u32::from_be_bytes(magic_cookie);
         let u16_xor_bits = (u32_xor_bits >> 16) as u16;
 
-        let family = value.get_u8();
-        let port = value.get_u16() ^ u16_xor_bits;
+        let addr = match MappedAddr::from_bytes(value)? {
+            MappedAddr::V4(addr) => {
+                let ip = u32::from_be_bytes(addr.addr) ^ u32_xor_bits;
 
-        let expected = match family {
-            1 => 4,
-            2 => 16,
-            _ => return Err(AttributeError::InvalidAttribute),
+                let port = addr.port.get() ^ u16_xor_bits;
+
+                SocketAddr::from((Ipv4Addr::from(ip), port))
+            }
+            MappedAddr::V6(addr) => {
+                let ip = u128::from_be_bytes(addr.addr) ^ u128_xor_bits;
+
+                let port = addr.port.get() ^ u16_xor_bits;
+
+                SocketAddr::from((Ipv6Addr::from(ip), port))
+            }
         };
 
-        if value.len() < expected {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        let addr = match family {
-            1 => IpAddr::from(Ipv4Addr::from(value.get_u32() ^ u32_xor_bits)),
-            2 => IpAddr::from(Ipv6Addr::from(value.get_u128() ^ u128_xor_bits)),
-            _ => unreachable!(),
-        };
-
-        Ok(Self::XorMappedAddress(SocketAddr::from((addr, port))))
+        Ok(Self::XorMappedAddress(addr))
     }
 
     /// Parse username.
     fn username_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        Self::string_from_bytes(value).map(Self::Username)
+        Text::from_bytes(value).map(Self::Username)
     }
 
     /// Parse message integrity.
     fn message_integrity_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 20 {
-            return Err(AttributeError::InvalidAttribute);
-        }
+        let (hash, _) =
+            <[u8; 20]>::read_from_prefix(value).map_err(|_| AttributeError::InvalidAttribute)?;
 
-        let mut hash = [0u8; 20];
-
-        hash.copy_from_slice(&value[..20]);
-
-        value.advance(20);
+        value.advance(std::mem::size_of_val(&hash));
 
         Ok(Self::MessageIntegrity(hash))
     }
 
     /// Parse fingerprint.
     fn fingerprint_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        let crc = value.get_u32();
-
-        Ok(Self::Fingerprint(crc))
+        value
+            .try_get_u32()
+            .map(Self::Fingerprint)
+            .map_err(|_| AttributeError::InvalidAttribute)
     }
 
     /// Parse error code.
     fn error_code_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        value.advance(2);
-
-        let class = (value.get_u8() & 7) as u16;
-        let num = value.get_u8() as u16;
-
-        if num > 99 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        let msg = Self::string_from_bytes(value)?;
-
-        Ok(Self::ErrorCode(ErrorCode::new(class * 100 + num, msg)))
+        ErrorCode::from_bytes(value).map(Self::ErrorCode)
     }
 
     /// Parse realm.
     fn realm_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        Self::string_from_bytes(value).map(Self::Realm)
+        Text::from_bytes(value).map(Self::Realm)
     }
 
     /// Parse nonce.
     fn nonce_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        Self::string_from_bytes(value).map(Self::Nonce)
+        Text::from_bytes(value).map(Self::Nonce)
     }
 
     /// Parse unknown attributes.
@@ -288,36 +235,39 @@ impl Attribute {
             return Err(AttributeError::InvalidAttribute);
         }
 
-        let mut res = Vec::with_capacity(value.len() >> 1);
+        let len = value.len() >> 1;
 
-        while !value.is_empty() {
-            res.push(value.get_u16());
-        }
+        let res = <[U16]>::ref_from_bytes_with_elems(value, len)
+            .map_err(SizeError::from)
+            .map_err(|_| AttributeError::InvalidAttribute)?
+            .iter()
+            .map(|u| u.get())
+            .collect();
+
+        value.advance(len << 1);
 
         Ok(Self::UnknownAttributes(res))
     }
 
     /// Parse software.
     fn software_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        Self::string_from_bytes(value).map(Self::Software)
+        Text::from_bytes(value).map(Self::Software)
     }
 
     /// Parse alternate server.
     fn alternate_server_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        match Self::mapped_address_from_bytes(value)? {
-            Self::MappedAddress(addr) => Ok(Self::AlternateServer(addr)),
-            _ => unreachable!(),
-        }
+        MappedAddr::from_bytes(value)
+            .map(SocketAddr::from)
+            .map(Self::AlternateServer)
     }
 
     /// Parse priority.
     #[cfg(feature = "ice")]
     fn priority_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 4 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        Ok(Self::Priority(value.get_u32()))
+        value
+            .try_get_u32()
+            .map(Self::Priority)
+            .map_err(|_| AttributeError::InvalidAttribute)
     }
 
     /// Parse use candidate.
@@ -329,32 +279,19 @@ impl Attribute {
     /// Parse ICE controlled.
     #[cfg(feature = "ice")]
     fn ice_controlled_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 8 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        Ok(Self::ICEControlled(value.get_u64()))
+        value
+            .try_get_u64()
+            .map(Self::ICEControlled)
+            .map_err(|_| AttributeError::InvalidAttribute)
     }
 
     /// Parse ICE controlling.
     #[cfg(feature = "ice")]
     fn ice_controlling_from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
-        if value.len() < 8 {
-            return Err(AttributeError::InvalidAttribute);
-        }
-
-        Ok(Self::ICEControlling(value.get_u64()))
-    }
-
-    /// Parse a string.
-    fn string_from_bytes(value: &mut Bytes) -> Result<String, AttributeError> {
-        let res = std::str::from_utf8(value)
-            .map(|s| s.to_string())
-            .map_err(|_| AttributeError::InvalidAttribute)?;
-
-        value.clear();
-
-        Ok(res)
+        value
+            .try_get_u64()
+            .map(Self::ICEControlling)
+            .map_err(|_| AttributeError::InvalidAttribute)
     }
 }
 
@@ -469,6 +406,7 @@ impl Attributes {
 
     /// Get ICE candidate priority.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_priority(&self) -> Option<u32> {
         self.inner.iter().find_map(|attr| match attr {
@@ -479,6 +417,7 @@ impl Attributes {
 
     /// Get the use ICE candidate attribute.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_use_candidate(&self) -> bool {
         self.inner
@@ -488,6 +427,7 @@ impl Attributes {
 
     /// Get the ICE controlled attribute.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_ice_controlled(&self) -> Option<u64> {
         self.inner.iter().find_map(|attr| match attr {
@@ -498,6 +438,7 @@ impl Attributes {
 
     /// Get the ICE controlling attribute.
     #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_ice_controlling(&self) -> Option<u64> {
         self.inner.iter().find_map(|attr| match attr {
@@ -513,5 +454,238 @@ impl Deref for Attributes {
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+/// Attribute text value.
+#[derive(Clone)]
+pub struct Text {
+    inner: Bytes,
+}
+
+impl Text {
+    /// Parse text value from a given buffer.
+    fn from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
+        Self::try_from(value.split_to(value.len())).map_err(|_| AttributeError::InvalidAttribute)
+    }
+
+    /// Create a text value from a given string.
+    #[inline]
+    pub const fn from_static_str(s: &'static str) -> Self {
+        Self {
+            inner: Bytes::from_static(s.as_bytes()),
+        }
+    }
+
+    /// Return the text value as a string slice.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        // SAFETY: The inner `Bytes` value is guaranteed to represent a valid
+        //   UTF-8 string.
+        unsafe { std::str::from_utf8_unchecked(&self.inner) }
+    }
+}
+
+impl Deref for Text {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl From<&str> for Text {
+    #[inline]
+    fn from(s: &str) -> Self {
+        Self::from(String::from(s))
+    }
+}
+
+impl From<String> for Text {
+    #[inline]
+    fn from(s: String) -> Self {
+        Self {
+            inner: Bytes::from(s),
+        }
+    }
+}
+
+impl TryFrom<Bytes> for Text {
+    type Error = std::str::Utf8Error;
+
+    #[inline]
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        std::str::from_utf8(&value)?;
+
+        let res = Self { inner: value };
+
+        Ok(res)
+    }
+}
+
+/// Error code attribute.
+#[derive(Clone)]
+pub struct ErrorCode {
+    code: u16,
+    msg: Text,
+}
+
+impl ErrorCode {
+    pub const BAD_REQUEST: Self = Self::new_static(400, "Bad Request");
+    pub const UNAUTHORIZED: Self = Self::new_static(401, "Unauthorized");
+    pub const UNKNOWN_ATTRIBUTES: Self = Self::new_static(420, "Unknown Attributes");
+
+    #[cfg(feature = "ice")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
+    pub const ROLE_CONFLICT: Self = Self::new_static(487, "Role Conflict");
+
+    /// Parse error code from a given buffer.
+    fn from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
+        let (header, _) = ErrorCodeHeader::read_from_prefix(value)
+            .ok()
+            .filter(|(h, _)| h.number < 100)
+            .ok_or(AttributeError::InvalidAttribute)?;
+
+        value.advance(std::mem::size_of_val(&header));
+
+        let class = (header.class & 7) as u16;
+        let number = header.number as u16;
+
+        let code = 100 * class + number;
+
+        let msg = Text::from_bytes(value)?;
+
+        Ok(Self::new(code, msg))
+    }
+
+    /// Create a new error code with a given numeric code and a message.
+    #[inline]
+    pub const fn new_static(code: u16, msg: &'static str) -> Self {
+        Self {
+            code,
+            msg: Text::from_static_str(msg),
+        }
+    }
+
+    /// Create a new error code with a given numeric code and a message.
+    pub fn new<T>(code: u16, msg: T) -> Self
+    where
+        T: Into<Text>,
+    {
+        Self {
+            code,
+            msg: msg.into(),
+        }
+    }
+
+    /// Get the error code number.
+    #[inline]
+    pub fn code(&self) -> u16 {
+        self.code
+    }
+
+    /// Get the error message.
+    #[inline]
+    pub fn message(&self) -> &str {
+        &self.msg
+    }
+}
+
+/// Error code attribute header.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct ErrorCodeHeader {
+    _padding: [u8; 2],
+    class: u8,
+    number: u8,
+}
+
+/// Mapped address attribute.
+enum MappedAddr {
+    V4(MappedIpv4Addr),
+    V6(MappedIpv6Addr),
+}
+
+impl MappedAddr {
+    /// Parse mapped address from a given buffer.
+    fn from_bytes(value: &mut Bytes) -> Result<Self, AttributeError> {
+        let (header, _) = MappedAddrHeader::read_from_prefix(value)
+            .map_err(|_| AttributeError::InvalidAttribute)?;
+
+        value.advance(std::mem::size_of_val(&header));
+
+        match header.family {
+            1 => {
+                let (addr, _) = MappedIpv4Addr::read_from_prefix(value)
+                    .map_err(|_| AttributeError::InvalidAttribute)?;
+
+                value.advance(std::mem::size_of_val(&addr));
+
+                Ok(Self::V4(addr))
+            }
+            2 => {
+                let (addr, _) = MappedIpv6Addr::read_from_prefix(value)
+                    .map_err(|_| AttributeError::InvalidAttribute)?;
+
+                value.advance(std::mem::size_of_val(&addr));
+
+                Ok(Self::V6(addr))
+            }
+            _ => Err(AttributeError::InvalidAttribute),
+        }
+    }
+}
+
+impl From<MappedAddr> for SocketAddr {
+    fn from(addr: MappedAddr) -> Self {
+        match addr {
+            MappedAddr::V4(addr) => addr.into(),
+            MappedAddr::V6(addr) => addr.into(),
+        }
+    }
+}
+
+/// Mapped address attribute header.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct MappedAddrHeader {
+    _padding: u8,
+    family: u8,
+}
+
+/// Mapped IPv4 address.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct MappedIpv4Addr {
+    port: U16,
+    addr: [u8; 4],
+}
+
+impl From<MappedIpv4Addr> for SocketAddr {
+    fn from(addr: MappedIpv4Addr) -> Self {
+        let ip = Ipv4Addr::from_octets(addr.addr);
+
+        let port = addr.port.get();
+
+        SocketAddr::from((ip, port))
+    }
+}
+
+/// Mapped IPv6 address.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct MappedIpv6Addr {
+    port: U16,
+    addr: [u8; 16],
+}
+
+impl From<MappedIpv6Addr> for SocketAddr {
+    fn from(addr: MappedIpv6Addr) -> Self {
+        let ip = Ipv6Addr::from_octets(addr.addr);
+
+        let port = addr.port.get();
+
+        SocketAddr::from((ip, port))
     }
 }

@@ -318,3 +318,44 @@ struct PasswordAlgorithmHeader {
     algorithm: U16,
     parameters_length: U16,
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use zerocopy::network_endian::U16;
+
+    use super::{AttributeHeader, Text};
+
+    #[test]
+    fn test_attribute_header_lengths() {
+        let cases: [(u16, usize, usize); _] = [
+            (0, 0, 0),
+            (1, 1, 4),
+            (2, 2, 4),
+            (3, 3, 4),
+            (4, 4, 4),
+            (5, 5, 8),
+            (20, 20, 20),
+            (21, 21, 24),
+        ];
+
+        for (len, value_len, padded) in cases {
+            let header = AttributeHeader {
+                attribute_type: U16::new(0),
+                attribute_length: U16::new(len),
+            };
+
+            assert_eq!(header.value_length(), value_len);
+            assert_eq!(header.padded_value_length(), padded);
+        }
+    }
+
+    #[test]
+    fn test_text() {
+        let t = Text::try_from(Bytes::from_static(b"bytes")).unwrap();
+
+        assert_eq!(t.as_str(), "bytes");
+
+        assert!(Text::try_from(Bytes::from_static(&[0xff, 0xfe])).is_err());
+    }
+}

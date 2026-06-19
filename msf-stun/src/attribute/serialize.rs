@@ -221,3 +221,189 @@ impl BytesMutExt for BytesMut {
         self.extend_from_slice(header.as_bytes());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use bytes::BytesMut;
+
+    use super::SerializeAttribute;
+
+    use crate::attribute::{ErrorCode, PasswordAlgorithm};
+
+    #[test]
+    fn test_serialize_empty() {
+        let mut b = BytesMut::new();
+
+        SerializeAttribute::serialize(&(), 0x0025, &mut b);
+
+        assert_eq!(&b[..], &[0x00, 0x25, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_serialize_u32() {
+        let mut b = BytesMut::new();
+
+        let n = 0x1234_5678u32;
+
+        n.serialize(0x0024, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x24, 0x00, 0x04]);
+        assert_eq!(&b[4..], &[0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn test_serialize_u64() {
+        let mut b = BytesMut::new();
+
+        let n = 0x0102_0304_0506_0708u64;
+
+        n.serialize(0x8029, &mut b);
+
+        assert_eq!(&b[..4], &[0x80, 0x29, 0x00, 0x08]);
+        assert_eq!(&b[4..], &[1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_serialize_socket_addr_v4() {
+        let mut b = BytesMut::new();
+
+        let addr = SocketAddr::from(([192, 0, 2, 1], 32853));
+
+        addr.serialize(0x0001, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x01, 0x00, 0x08]);
+        assert_eq!(&b[4..8], &[0x00, 0x01, 0x80, 0x55]);
+        assert_eq!(&b[8..], &[192, 0, 2, 1]);
+    }
+
+    #[test]
+    fn test_serialize_socket_addr_v6() {
+        let mut b = BytesMut::new();
+
+        let ip = u128::to_be_bytes(0x2001_0db8_0000_0000_0000_0000_0000_0001);
+
+        let addr = SocketAddr::from((ip, 32853));
+
+        addr.serialize(0x0001, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x01, 0x00, 0x14]);
+        assert_eq!(&b[4..8], &[0x00, 0x02, 0x80, 0x55]);
+        assert_eq!(&b[8..], &ip);
+    }
+
+    #[test]
+    fn test_serialize_error_code_unaligned() {
+        let mut b = BytesMut::new();
+
+        let code = ErrorCode::new_static(420, "Unknown");
+
+        code.serialize(0x0009, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x09, 0x00, 0x0b]);
+        assert_eq!(&b[4..8], &[0x00, 0x00, 0x04, 0x14]);
+        assert_eq!(&b[8..], b"Unknown\0");
+    }
+
+    #[test]
+    fn test_serialize_error_code_aligned() {
+        let mut b = BytesMut::new();
+
+        // with a four-byte message, the attribute value is already aligned and
+        // no padding should be added
+        let code = ErrorCode::new_static(400, "Bad!");
+
+        code.serialize(0x0009, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x09, 0x00, 0x08]);
+        assert_eq!(&b[4..8], &[0x00, 0x00, 0x04, 0x00]);
+        assert_eq!(&b[8..], b"Bad!");
+    }
+
+    #[test]
+    fn test_serialize_password_algorithm() {
+        let mut b = BytesMut::new();
+
+        let alg = PasswordAlgorithm::Md5;
+
+        alg.serialize(0x001d, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x1d, 0x00, 0x04]);
+        assert_eq!(&b[4..], &[0x00, 0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_serialize_password_algorithms() {
+        let mut b = BytesMut::new();
+
+        let algs: &[PasswordAlgorithm] = &[PasswordAlgorithm::Md5, PasswordAlgorithm::Sha256];
+
+        algs.serialize(0x8002, &mut b);
+
+        assert_eq!(&b[..4], &[0x80, 0x02, 0x00, 0x08]);
+        assert_eq!(&b[4..8], &[0x00, 0x01, 0x00, 0x00]);
+        assert_eq!(&b[8..], &[0x00, 0x02, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_serialize_str_aligned() {
+        let mut b = BytesMut::new();
+
+        let s = "test";
+
+        s.serialize(0x0006, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x06, 0x00, 0x04]);
+        assert_eq!(&b[4..], b"test");
+    }
+
+    #[test]
+    fn test_serialize_str_unaligned() {
+        let mut b = BytesMut::new();
+
+        let s = "abc";
+
+        s.serialize(0x0006, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x06, 0x00, 0x03]);
+        assert_eq!(&b[4..], b"abc\0");
+    }
+
+    #[test]
+    fn test_serialize_bytes() {
+        let mut b = BytesMut::new();
+
+        let data: &[u8] = &[0xde, 0xad, 0xbe, 0xef, 0x01];
+
+        data.serialize(0x0008, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x08, 0x00, 0x05]);
+        assert_eq!(&b[4..9], data);
+        assert_eq!(&b[9..], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn test_serialize_u16_list_even() {
+        let mut b = BytesMut::new();
+
+        let v: &[u16] = &[0x0001, 0x0006];
+
+        v.serialize(0x000a, &mut b);
+
+        assert_eq!(&b[..], &[0x00, 0x0a, 0x00, 0x04, 0x00, 0x01, 0x00, 0x06]);
+    }
+
+    #[test]
+    fn test_serialize_u16_list_odd() {
+        let mut b = BytesMut::new();
+
+        let v: &[u16] = &[0x0001, 0x0006, 0x000a];
+
+        v.serialize(0x000a, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x0a, 0x00, 0x06]);
+        assert_eq!(&b[4..10], &[0x00, 0x01, 0x00, 0x06, 0x00, 0x0a]);
+        assert_eq!(&b[10..], &[0, 0]);
+    }
+}

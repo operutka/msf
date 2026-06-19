@@ -100,6 +100,11 @@ impl MessageWriter<'_> {
         addr.serialize(attribute::ATTR_TYPE_ALTERNATE_SERVER, self);
     }
 
+    /// Write the alternate domain attribute.
+    pub fn put_alternate_domain(&mut self, domain: &str) {
+        domain.serialize(attribute::ATTR_TYPE_ALTERNATE_DOMAIN, self);
+    }
+
     /// Write the mapped address attribute.
     pub fn put_mapped_address(&mut self, addr: SocketAddr) {
         addr.serialize(attribute::ATTR_TYPE_MAPPED_ADDRESS, self);
@@ -232,5 +237,96 @@ impl Deref for MessageWriter<'_> {
 impl DerefMut for MessageWriter<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.buffer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use bytes::BytesMut;
+
+    use super::MessageBuffer;
+
+    use crate::{MessageClass, Method, RFC_5389_MAGIC_COOKIE};
+
+    #[test]
+    fn test_empty_message_length() {
+        let mut buf = BytesMut::new();
+
+        let mut mb = MessageBuffer::new(&mut buf);
+
+        let writer = mb.create_message(
+            MessageClass::Request,
+            Method::Binding,
+            RFC_5389_MAGIC_COOKIE,
+            [0u8; 12],
+        );
+
+        writer.finalize();
+
+        assert_eq!(buf.len(), 20);
+
+        assert_eq!(&buf[2..4], &[0x00, 0x00]);
+        assert_eq!(&buf[4..8], &u32::to_be_bytes(RFC_5389_MAGIC_COOKIE));
+    }
+
+    #[test]
+    fn test_sequential_messages() {
+        let mut buf = BytesMut::new();
+
+        let mut mb = MessageBuffer::new(&mut buf);
+
+        let writer = mb.create_message(
+            MessageClass::Request,
+            Method::Binding,
+            RFC_5389_MAGIC_COOKIE,
+            [0u8; 12],
+        );
+
+        writer.finalize();
+
+        let mut writer = mb.create_message(
+            MessageClass::Success,
+            Method::Binding,
+            RFC_5389_MAGIC_COOKIE,
+            [0u8; 12],
+        );
+
+        writer.put_software("x");
+        writer.finalize();
+
+        assert_eq!(buf.len(), 20 + 20 + 8);
+        // the first message is has again an empty body
+        assert_eq!(&buf[2..4], &[0x00, 0x00]);
+        // the second message carries an 8-byte software attribute
+        assert_eq!(&buf[22..24], &[0x00, 0x08]);
+    }
+
+    #[test]
+    fn test_xor_mapped_address_bytes() {
+        let mut buf = BytesMut::new();
+
+        let mut mb = MessageBuffer::new(&mut buf);
+
+        let mut writer = mb.create_message(
+            MessageClass::Success,
+            Method::Binding,
+            RFC_5389_MAGIC_COOKIE,
+            [0u8; 12],
+        );
+
+        writer.put_xor_mapped_address(SocketAddr::from(([192, 0, 2, 1], 32853)));
+        writer.finalize();
+
+        assert_eq!(buf.len(), 32);
+
+        assert_eq!(&buf[2..4], &[0x00, 0x0c]);
+        assert_eq!(&buf[20..24], &[0x00, 0x20, 0x00, 0x08]);
+        // family + XOR-ed port
+        assert_eq!(&buf[24..26], &[0x00, 0x01]);
+        assert_eq!(&buf[26..28], &[0xa1, 0x47]);
+        // XOR-ed address
+        assert_eq!(&buf[28..32], &[0xe1, 0x12, 0xa6, 0x43]);
     }
 }

@@ -464,3 +464,191 @@ fn calculate_fingerprint(msg: &[u8]) -> u32 {
 
     digest.finalize() ^ 0x5354554e
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::{
+        builder::{MessageBuilder, MessageIntegrityAlgorithm},
+        IntegrityError, InvalidMessage, Message, MessageClass, Method, RFC_5389_MAGIC_COOKIE,
+    };
+
+    /// Assemble a raw STUN frame from a message type and a body of attributes.
+    fn frame(message_type: u16, magic_cookie: u32, tid: [u8; 12], attrs: &[u8]) -> Bytes {
+        let mut buf = Vec::with_capacity(20 + attrs.len());
+
+        buf.extend_from_slice(&message_type.to_be_bytes());
+        buf.extend_from_slice(&u16::to_be_bytes(attrs.len() as u16));
+        buf.extend_from_slice(&magic_cookie.to_be_bytes());
+        buf.extend_from_slice(&tid);
+        buf.extend_from_slice(attrs);
+
+        Bytes::from(buf)
+    }
+
+    #[test]
+    fn test_message_class_round_trip() {
+        let classes = [
+            MessageClass::Request,
+            MessageClass::Indication,
+            MessageClass::Success,
+            MessageClass::Error,
+        ];
+
+        for class in classes {
+            let bits = class.into_message_type();
+
+            let mc = MessageClass::from_message_type(bits);
+
+            assert_eq!(mc, class);
+        }
+    }
+
+    #[test]
+    fn test_reject_non_stun_message() {
+        // the two most significant bits of the message type must be zero
+        let res = Message::from_frame(frame(0x8001, RFC_5389_MAGIC_COOKIE, [0u8; 12], &[]));
+
+        assert!(matches!(res, Err(InvalidMessage::InvalidHeader)));
+    }
+
+    #[test]
+    fn test_reject_unaligned_length() {
+        let mut buf = vec![0x00, 0x01, 0x00, 0x05];
+
+        buf.extend_from_slice(&u32::to_be_bytes(RFC_5389_MAGIC_COOKIE));
+        buf.extend_from_slice(&[0u8; 12]);
+        buf.extend_from_slice(&[0u8; 8]);
+
+        let res = Message::from_frame(Bytes::from(buf));
+
+        assert!(matches!(res, Err(InvalidMessage::InvalidHeader)));
+    }
+
+    #[test]
+    fn test_reject_truncated_body() {
+        let mut buf = vec![0x00, 0x01, 0x00, 0x08];
+
+        buf.extend_from_slice(&u32::to_be_bytes(RFC_5389_MAGIC_COOKIE));
+        buf.extend_from_slice(&[0u8; 12]);
+        buf.extend_from_slice(&[0u8; 4]);
+
+        let res = Message::from_frame(Bytes::from(buf));
+
+        assert!(matches!(res, Err(InvalidMessage::InvalidHeader)));
+    }
+
+    #[test]
+    fn test_reject_short_frame() {
+        let res = Message::from_frame(Bytes::from_static(&[0, 1, 0, 0]));
+
+        assert!(matches!(res, Err(InvalidMessage::InvalidHeader)));
+    }
+
+    #[test]
+    fn test_parse_binding_request() {
+        let msg = Message::from_frame(frame(0x0001, RFC_5389_MAGIC_COOKIE, [5u8; 12], &[]))
+            .expect("message expected");
+
+        assert!(msg.is_request());
+        assert!(!msg.is_response());
+        assert!(msg.is_rfc5389_message());
+
+        assert_eq!(msg.class(), MessageClass::Request);
+        assert_eq!(msg.method(), Method::Binding);
+        assert_eq!(msg.magic_cookie(), RFC_5389_MAGIC_COOKIE);
+        assert_eq!(msg.transaction_id(), [5u8; 12]);
+    }
+
+    #[test]
+    fn test_unknown_comprehension_required_collected() {
+        // 0x7000 is comprehension-required, 0x9000 is comprehension-optional
+        let attrs = [0x70, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00];
+
+        let msg = Message::from_frame(frame(0x0001, RFC_5389_MAGIC_COOKIE, [0u8; 12], &attrs))
+            .expect("message expected");
+
+        let attrs = msg.attributes();
+
+        assert!(attrs.is_empty());
+
+        assert_eq!(msg.unknown_attributes(), &[0x7000]);
+    }
+
+    #[test]
+    fn test_attributes_after_integrity_ignored() {
+        let mut attrs = Vec::new();
+
+        // USERNAME "user" before MESSAGE-INTEGRITY -> kept
+        attrs.extend_from_slice(&[0x00, 0x06, 0x00, 0x04]);
+        attrs.extend_from_slice(b"user");
+        // MESSAGE-INTEGRITY (arbitrary hash)
+        attrs.extend_from_slice(&[0x00, 0x08, 0x00, 0x14]);
+        attrs.extend_from_slice(&[0xaa; 20]);
+        // SOFTWARE after MESSAGE-INTEGRITY -> ignored
+        attrs.extend_from_slice(&[0x80, 0x22, 0x00, 0x01, b'x', 0, 0, 0]);
+
+        let msg = Message::from_frame(frame(0x0001, RFC_5389_MAGIC_COOKIE, [0u8; 12], &attrs))
+            .expect("message expected");
+
+        let attrs = msg.attributes();
+
+        assert_eq!(attrs.get_username(), Some("user"));
+        assert_eq!(attrs.get_software(), None);
+    }
+
+    #[test]
+    fn test_fingerprint_and_integrity_round_trip() {
+        let key = b"key";
+
+        let msg = MessageBuilder::binding_request([1u8; 12])
+            .username("u")
+            .message_integrity_key(key)
+            .message_integrity_algorithm(MessageIntegrityAlgorithm::Sha1)
+            .fingerprint(true)
+            .build();
+
+        let msg = Message::from_frame(msg).expect("message expected");
+
+        assert!(msg.check_st_credentials(key).is_ok());
+        assert!(msg.check_fingerprint());
+    }
+
+    #[test]
+    fn test_check_st_credentials_missing() {
+        let msg = Message::from_frame(frame(0x0001, RFC_5389_MAGIC_COOKIE, [0u8; 12], &[]))
+            .expect("message expected");
+
+        assert!(matches!(
+            msg.check_st_credentials(b"key"),
+            Err(IntegrityError::Missing)
+        ));
+
+        assert!(!msg.check_fingerprint());
+    }
+
+    #[test]
+    fn test_set_message_length() {
+        let mut buf = [0u8; 20];
+
+        super::set_message_length(&mut buf, 0x1234);
+
+        assert_eq!(buf[2], 0x12);
+        assert_eq!(buf[3], 0x34);
+    }
+
+    #[test]
+    fn test_take_message_header() {
+        let mut data = vec![0u8; 24];
+
+        for i in 0..data.len() {
+            data[i] = i as u8;
+        }
+
+        let header = super::take_message_header(&data);
+
+        assert_eq!(header.len(), 20);
+        assert_eq!(&header[..], &data[..20]);
+    }
+}

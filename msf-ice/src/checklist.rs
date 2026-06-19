@@ -378,7 +378,8 @@ impl Checklist {
         stun::MessageBuilder::success_response(request)
             .fingerprint(true)
             .xor_mapped_address(remote_addr)
-            .message_integrity(key)
+            .message_integrity_key(key)
+            .message_integrity_algorithm(stun::MessageIntegrityAlgorithm::Sha1)
             .build()
     }
 
@@ -821,17 +822,20 @@ impl StunRequestError {
                 builder
                     .error_code(stun::ErrorCode::UNKNOWN_ATTRIBUTES)
                     .unknown_attributes(request.unknown_attributes())
-                    .message_integrity(pwd.as_bytes());
+                    .message_integrity_key(pwd.as_bytes())
+                    .message_integrity_algorithm(stun::MessageIntegrityAlgorithm::Sha1);
             }
             Self::MissingPriority => {
                 builder
                     .error_code(stun::ErrorCode::BAD_REQUEST)
-                    .message_integrity(pwd.as_bytes());
+                    .message_integrity_key(pwd.as_bytes())
+                    .message_integrity_algorithm(stun::MessageIntegrityAlgorithm::Sha1);
             }
             Self::RemoteRoleConflict => {
                 builder
                     .error_code(stun::ErrorCode::ROLE_CONFLICT)
-                    .message_integrity(pwd.as_bytes());
+                    .message_integrity_key(pwd.as_bytes())
+                    .message_integrity_algorithm(stun::MessageIntegrityAlgorithm::Sha1);
             }
             _ => return None,
         }

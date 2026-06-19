@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 (2026-MM-DD)
+
+* Update the msf-stun dependency
+
 ## v0.2.3 (2026-02-20)
 
 * Update dependencies

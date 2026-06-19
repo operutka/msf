@@ -195,7 +195,8 @@ impl Check {
         builder
             .username(username)
             .priority(priority)
-            .message_integrity(password.as_bytes())
+            .message_integrity_key(password.as_bytes())
+            .message_integrity_algorithm(stun::MessageIntegrityAlgorithm::Sha1)
             .fingerprint(true);
 
         if agent_role == AgentRole::Controlling {

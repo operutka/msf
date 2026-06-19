@@ -1,26 +1,33 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod attribute;
+mod builder;
 mod writer;
 
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    net::SocketAddr,
 };
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
+use sha2::Sha256;
 use zerocopy::{
     network_endian::{U16, U32},
-    FromBytes, Immutable, KnownLayout, Unaligned,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
 };
 
-use self::{attribute::AttributeError, writer::MessageBuffer};
+use self::attribute::AttributeError;
 
-pub use self::attribute::{Attribute, Attributes, ErrorCode, Text};
+pub use self::{
+    attribute::{
+        Attribute, Attributes, ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha1Hash, Sha256Hash,
+        Text,
+    },
+    builder::{MessageBuilder, MessageIntegrityAlgorithm},
+};
 
 const RFC_5389_MAGIC_COOKIE: u32 = 0x2112a442;
 
@@ -84,7 +91,7 @@ type TransactionID = [u8; 12];
 struct InvalidMessageHeader;
 
 /// Message header.
-#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
 #[repr(C)]
 struct MessageHeader {
     message_type: U16,
@@ -178,6 +185,7 @@ pub struct Message {
     attributes: Attributes,
     unknown_attributes: Vec<u16>,
     message_integrity_offset: Option<usize>,
+    message_integrity_sha256_offset: Option<usize>,
     fingerprint_offset: Option<usize>,
 }
 
@@ -203,6 +211,7 @@ impl Message {
             attributes: Attributes::empty(),
             unknown_attributes: Vec::new(),
             message_integrity_offset: None,
+            message_integrity_sha256_offset: None,
             fingerprint_offset: None,
         };
 
@@ -220,21 +229,36 @@ impl Message {
         let mut body = self.original.slice(20..);
 
         while !body.is_empty() {
+            let offset = len - body.len();
+
             match Attribute::from_bytes(&mut body, self.long_transaction_id()) {
                 Ok(Attribute::Fingerprint(crc)) => {
                     attributes.push(Attribute::Fingerprint(crc));
 
-                    self.fingerprint_offset = Some(len - body.len() - 8);
+                    if self.fingerprint_offset.is_none() {
+                        self.fingerprint_offset = Some(offset);
+                    }
                 }
                 Ok(Attribute::MessageIntegrity(hash)) => {
                     attributes.push(Attribute::MessageIntegrity(hash));
 
-                    self.message_integrity_offset = Some(len - body.len() - 24);
+                    if self.message_integrity_offset.is_none() {
+                        self.message_integrity_offset = Some(offset);
+                    }
+                }
+                Ok(Attribute::MessageIntegritySha256(hash)) => {
+                    attributes.push(Attribute::MessageIntegritySha256(hash));
+
+                    if self.message_integrity_sha256_offset.is_none() {
+                        self.message_integrity_sha256_offset = Some(offset);
+                    }
                 }
                 Ok(attr) => {
                     // attributes received after message integrity must be
                     // ignored (only fingerprint is allowed)
-                    if self.message_integrity_offset.is_none() {
+                    if self.message_integrity_offset.is_none()
+                        && self.message_integrity_sha256_offset.is_none()
+                    {
                         attributes.push(attr);
                     }
                 }
@@ -369,390 +393,6 @@ impl Message {
     }
 }
 
-/// STUN message builder.
-pub struct MessageBuilder {
-    class: MessageClass,
-    method: Method,
-    magic_cookie: u32,
-    transaction_id: TransactionID,
-
-    mapped_address: Option<SocketAddr>,
-    xor_mapped_address: Option<SocketAddr>,
-    username: Option<String>,
-    message_integrity: Option<Vec<u8>>,
-    fingerprint: bool,
-    error_code: Option<ErrorCode>,
-    realm: Option<String>,
-    nonce: Option<String>,
-    unknown_attributes: Option<Vec<u16>>,
-    software: Option<String>,
-    alternate_server: Option<SocketAddr>,
-
-    #[cfg(feature = "ice")]
-    priority: Option<u32>,
-
-    #[cfg(feature = "ice")]
-    use_candidate: bool,
-
-    #[cfg(feature = "ice")]
-    ice_controlled: Option<u64>,
-
-    #[cfg(feature = "ice")]
-    ice_controlling: Option<u64>,
-}
-
-impl MessageBuilder {
-    /// Create a new message builder.
-    #[inline]
-    const fn new_internal(
-        class: MessageClass,
-        method: Method,
-        magic_cookie: u32,
-        transaction_id: [u8; 12],
-        error_code: Option<ErrorCode>,
-    ) -> Self {
-        Self {
-            class,
-            method,
-            magic_cookie,
-            transaction_id,
-
-            mapped_address: None,
-            xor_mapped_address: None,
-            username: None,
-            message_integrity: None,
-            fingerprint: false,
-            error_code,
-            realm: None,
-            nonce: None,
-            unknown_attributes: None,
-            software: None,
-            alternate_server: None,
-
-            #[cfg(feature = "ice")]
-            priority: None,
-
-            #[cfg(feature = "ice")]
-            use_candidate: false,
-
-            #[cfg(feature = "ice")]
-            ice_controlled: None,
-
-            #[cfg(feature = "ice")]
-            ice_controlling: None,
-        }
-    }
-
-    /// Create a new message builder.
-    #[inline]
-    pub const fn new(class: MessageClass, method: Method, transaction_id: [u8; 12]) -> Self {
-        Self::new_internal(class, method, RFC_5389_MAGIC_COOKIE, transaction_id, None)
-    }
-
-    /// Create a new message builder for a STUN binding request.
-    #[inline]
-    pub const fn binding_request(transaction_id: [u8; 12]) -> Self {
-        Self::new_internal(
-            MessageClass::Request,
-            Method::Binding,
-            RFC_5389_MAGIC_COOKIE,
-            transaction_id,
-            None,
-        )
-    }
-
-    /// Create a new message builder for a STUN response.
-    #[inline]
-    pub const fn response(class: MessageClass, request: &Message) -> Self {
-        Self::new_internal(
-            class,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            None,
-        )
-    }
-
-    /// Create a new message builder for a success STUN response.
-    #[inline]
-    pub const fn success_response(request: &Message) -> Self {
-        Self::new_internal(
-            MessageClass::Success,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            None,
-        )
-    }
-
-    /// Create a new message builder for an error STUN response.
-    #[inline]
-    pub const fn error_response(request: &Message, error_code: ErrorCode) -> Self {
-        Self::new_internal(
-            MessageClass::Error,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            Some(error_code),
-        )
-    }
-
-    /// Set message class.
-    #[inline]
-    pub fn class(&mut self, class: MessageClass) -> &mut Self {
-        self.class = class;
-        self
-    }
-
-    /// Set STUN method.
-    #[inline]
-    pub fn method(&mut self, method: Method) -> &mut Self {
-        self.method = method;
-        self
-    }
-
-    /// Set magic cookie as defined in RFC 5389.
-    #[inline]
-    pub fn magic_cookie(&mut self, cookie: u32) -> &mut Self {
-        self.magic_cookie = cookie;
-        self
-    }
-
-    /// Set transaction ID as defined in RFC 5389.
-    #[inline]
-    pub fn transaction_id(&mut self, transaction_id: [u8; 12]) -> &mut Self {
-        self.transaction_id = transaction_id;
-        self
-    }
-
-    /// Set transaction ID as defined in RFC 3489.
-    #[inline]
-    pub fn long_transaction_id(&mut self, transaction_id: [u8; 16]) -> &mut Self {
-        let mut magic_cookie = [0u8; 4];
-        let mut short_id = [0u8; 12];
-
-        magic_cookie.copy_from_slice(&transaction_id[..4]);
-        short_id.copy_from_slice(&transaction_id[4..]);
-
-        self.magic_cookie = u32::from_be_bytes(magic_cookie);
-        self.transaction_id = short_id;
-
-        self
-    }
-
-    /// Set mapped address.
-    #[inline]
-    pub fn mapped_address(&mut self, addr: SocketAddr) -> &mut Self {
-        self.mapped_address = Some(addr);
-        self
-    }
-
-    /// Set XOR mapped address.
-    #[inline]
-    pub fn xor_mapped_address(&mut self, addr: SocketAddr) -> &mut Self {
-        self.xor_mapped_address = Some(addr);
-        self
-    }
-
-    /// Set username.
-    pub fn username<T>(&mut self, username: T) -> &mut Self
-    where
-        T: Into<String>,
-    {
-        self.username = Some(username.into());
-        self
-    }
-
-    /// Enable message integrity and use a given key.
-    pub fn message_integrity<T>(&mut self, key: T) -> &mut Self
-    where
-        T: Into<Vec<u8>>,
-    {
-        self.message_integrity = Some(key.into());
-        self
-    }
-
-    /// Enable or disable message fingerprint.
-    #[inline]
-    pub fn fingerprint(&mut self, enable: bool) -> &mut Self {
-        self.fingerprint = enable;
-        self
-    }
-
-    /// Set error code.
-    #[inline]
-    pub fn error_code(&mut self, error_code: ErrorCode) -> &mut Self {
-        self.error_code = Some(error_code);
-        self
-    }
-
-    /// Set realm.
-    pub fn realm<T>(&mut self, realm: T) -> &mut Self
-    where
-        T: Into<String>,
-    {
-        self.realm = Some(realm.into());
-        self
-    }
-
-    /// Set nonce.
-    pub fn nonce<T>(&mut self, nonce: T) -> &mut Self
-    where
-        T: Into<String>,
-    {
-        self.nonce = Some(nonce.into());
-        self
-    }
-
-    /// Set unknown attributes.
-    pub fn unknown_attributes<T>(&mut self, unknown_attributes: T) -> &mut Self
-    where
-        T: Into<Vec<u16>>,
-    {
-        self.unknown_attributes = Some(unknown_attributes.into());
-        self
-    }
-
-    /// Set software.
-    pub fn software<T>(&mut self, software: T) -> &mut Self
-    where
-        T: Into<String>,
-    {
-        self.software = Some(software.into());
-        self
-    }
-
-    /// Set alternate server.
-    #[inline]
-    pub fn alternate_server(&mut self, server: SocketAddr) -> &mut Self {
-        self.alternate_server = Some(server);
-        self
-    }
-
-    /// Set ICE candidate priority.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
-    #[inline]
-    pub fn priority(&mut self, priority: u32) -> &mut Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    /// Set the use candidate ICE flag.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
-    #[inline]
-    pub fn use_candidate(&mut self, enable: bool) -> &mut Self {
-        self.use_candidate = enable;
-        self
-    }
-
-    /// Set the ICE controlled attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
-    #[inline]
-    pub fn ice_controlled(&mut self, n: u64) -> &mut Self {
-        self.ice_controlled = Some(n);
-        self
-    }
-
-    /// Set the ICE controlling attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
-    #[inline]
-    pub fn ice_controlling(&mut self, n: u64) -> &mut Self {
-        self.ice_controlling = Some(n);
-        self
-    }
-
-    /// Serialize the message into a given buffer.
-    pub fn serialize(&self, buffer: &mut BytesMut) {
-        let mut buffer = MessageBuffer::new(buffer);
-
-        // create a buffer with an empty header
-        let mut writer = buffer.create_message(
-            self.class,
-            self.method,
-            self.magic_cookie,
-            self.transaction_id,
-        );
-
-        if let Some(status) = self.error_code.as_ref() {
-            writer.put_error_code(status);
-        }
-
-        if let Some(attributes) = self.unknown_attributes.as_ref() {
-            writer.put_unknown_attributes(attributes);
-        }
-
-        if let Some(alternate_server) = self.alternate_server {
-            writer.put_alternate_server(alternate_server);
-        }
-
-        if let Some(addr) = self.mapped_address {
-            writer.put_mapped_address(addr);
-        }
-
-        if let Some(addr) = self.xor_mapped_address {
-            writer.put_xor_mapped_address(addr);
-        }
-
-        if let Some(username) = self.username.as_deref() {
-            writer.put_username(username);
-        }
-
-        if let Some(realm) = self.realm.as_deref() {
-            writer.put_realm(realm);
-        }
-
-        if let Some(nonce) = self.nonce.as_deref() {
-            writer.put_nonce(nonce);
-        }
-
-        if let Some(software) = self.software.as_deref() {
-            writer.put_software(software);
-        }
-
-        #[cfg(feature = "ice")]
-        {
-            if let Some(priority) = self.priority {
-                writer.put_priority(priority);
-            }
-
-            if self.use_candidate {
-                writer.put_use_candidate();
-            }
-
-            if let Some(n) = self.ice_controlled {
-                writer.put_ice_controlled(n);
-            }
-
-            if let Some(n) = self.ice_controlling {
-                writer.put_ice_controlling(n);
-            }
-        }
-
-        if let Some(key) = self.message_integrity.as_ref() {
-            writer.put_message_integrity(key);
-        }
-
-        if self.fingerprint {
-            writer.put_fingerprint();
-        }
-
-        writer.finalize();
-    }
-
-    /// Finalize the message and return it as `Bytes`.
-    pub fn build(&self) -> Bytes {
-        let mut res = BytesMut::new();
-
-        self.serialize(&mut res);
-
-        res.freeze()
-    }
-}
-
 /// Take the message header bytes from a given STUN message.
 fn take_message_header(msg: &[u8]) -> [u8; 20] {
     assert!(msg.len() >= 20);
@@ -786,7 +426,23 @@ fn calculate_message_integrity(key: &[u8], msg: &[u8]) -> [u8; 20] {
 
     let hash = hmac.finalize().into_bytes();
 
-    assert_eq!(hash.len(), 20);
+    hash.into()
+}
+
+/// Calculate message integrity of a given STUN message.
+fn calculate_message_integrity_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut header = take_message_header(msg);
+
+    let len = msg.len() - 20 + 36;
+
+    set_message_length(&mut header, len as u16);
+
+    let mut hmac = Hmac::<Sha256>::new_from_slice(key).expect("unable to initialize HMAC-SHA256");
+
+    hmac.update(&header);
+    hmac.update(&msg[20..]);
+
+    let hash = hmac.finalize().into_bytes();
 
     hash.into()
 }

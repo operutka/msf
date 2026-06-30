@@ -29,6 +29,11 @@ pub use self::{
     builder::{MessageBuilder, MessageIntegrityAlgorithm},
 };
 
+#[cfg(feature = "turn")]
+pub use self::attribute::{
+    AddressErrorCode, AddressFamily, ChannelNumber, EvenPort, TransportProtocol, ICMP,
+};
+
 const RFC_5389_MAGIC_COOKIE: u32 = 0x2112a442;
 
 /// Message class.
@@ -63,6 +68,18 @@ impl MessageClass {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Method {
     Binding,
+    #[cfg(feature = "turn")]
+    Allocate,
+    #[cfg(feature = "turn")]
+    Refresh,
+    #[cfg(feature = "turn")]
+    Send,
+    #[cfg(feature = "turn")]
+    Data,
+    #[cfg(feature = "turn")]
+    CreatePermission,
+    #[cfg(feature = "turn")]
+    ChannelBind,
     Other(u16),
 }
 
@@ -71,6 +88,18 @@ impl Method {
     fn from_message_type(msg_type: u16) -> Self {
         match msg_type & !0xc110 {
             0x0001 => Self::Binding,
+            #[cfg(feature = "turn")]
+            0x0003 => Self::Allocate,
+            #[cfg(feature = "turn")]
+            0x0004 => Self::Refresh,
+            #[cfg(feature = "turn")]
+            0x0006 => Self::Send,
+            #[cfg(feature = "turn")]
+            0x0007 => Self::Data,
+            #[cfg(feature = "turn")]
+            0x0008 => Self::CreatePermission,
+            #[cfg(feature = "turn")]
+            0x0009 => Self::ChannelBind,
             m => Self::Other(m),
         }
     }
@@ -79,6 +108,18 @@ impl Method {
     fn into_message_type(self) -> u16 {
         match self {
             Self::Binding => 0x0001,
+            #[cfg(feature = "turn")]
+            Self::Allocate => 0x0003,
+            #[cfg(feature = "turn")]
+            Self::Refresh => 0x0004,
+            #[cfg(feature = "turn")]
+            Self::Send => 0x0006,
+            #[cfg(feature = "turn")]
+            Self::Data => 0x0007,
+            #[cfg(feature = "turn")]
+            Self::CreatePermission => 0x0008,
+            #[cfg(feature = "turn")]
+            Self::ChannelBind => 0x0009,
             Self::Other(m) => m & !0xc110,
         }
     }

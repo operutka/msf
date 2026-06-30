@@ -1,45 +1,35 @@
 mod collection;
-mod deserialize;
-mod serialize;
 
-use std::{
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    ops::Deref,
-};
+pub mod common;
 
-use bytes::Bytes;
+#[cfg(feature = "ice")]
+pub mod ice;
+
+#[cfg(feature = "turn")]
+pub mod turn;
+
+use std::net::SocketAddr;
+
+use bytes::{Buf, Bytes, BytesMut};
 use zerocopy::{network_endian::U16, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-pub use self::{collection::Attributes, serialize::SerializeAttribute};
-
-pub const ATTR_TYPE_MAPPED_ADDRESS: u16 = 0x0001;
-pub const ATTR_TYPE_XOR_MAPPED_ADDRESS: u16 = 0x0020;
-pub const ATTR_TYPE_USERNAME: u16 = 0x0006;
-pub const ATTR_TYPE_USERHASH: u16 = 0x001E;
-pub const ATTR_TYPE_MESSAGE_INTEGRITY: u16 = 0x0008;
-pub const ATTR_TYPE_MESSAGE_INTEGRITY_SHA256: u16 = 0x001C;
-pub const ATTR_TYPE_FINGERPRINT: u16 = 0x8028;
-pub const ATTR_TYPE_ERROR_CODE: u16 = 0x0009;
-pub const ATTR_TYPE_REALM: u16 = 0x0014;
-pub const ATTR_TYPE_NONCE: u16 = 0x0015;
-pub const ATTR_TYPE_PASSWORD_ALGORITHMS: u16 = 0x8002;
-pub const ATTR_TYPE_PASSWORD_ALGORITHM: u16 = 0x001D;
-pub const ATTR_TYPE_UNKNOWN_ATTRIBUTES: u16 = 0x000A;
-pub const ATTR_TYPE_SOFTWARE: u16 = 0x8022;
-pub const ATTR_TYPE_ALTERNATE_SERVER: u16 = 0x8023;
-pub const ATTR_TYPE_ALTERNATE_DOMAIN: u16 = 0x8003;
+use self::common::BytesExt as _;
 
 #[cfg(feature = "ice")]
-pub const ATTR_TYPE_PRIORITY: u16 = 0x0024;
+use self::ice::BytesExt as _;
 
-#[cfg(feature = "ice")]
-pub const ATTR_TYPE_USE_CANDIDATE: u16 = 0x0025;
+#[cfg(feature = "turn")]
+use self::turn::BytesExt as _;
 
-#[cfg(feature = "ice")]
-pub const ATTR_TYPE_ICE_CONTROLLED: u16 = 0x8029;
+pub use self::{
+    collection::Attributes,
+    common::{ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha1Hash, Sha256Hash, Text},
+};
 
-#[cfg(feature = "ice")]
-pub const ATTR_TYPE_ICE_CONTROLLING: u16 = 0x802A;
+#[cfg(feature = "turn")]
+pub use self::turn::{
+    AddressErrorCode, AddressFamily, ChannelNumber, EvenPort, TransportProtocol, ICMP,
+};
 
 /// Attribute error.
 pub enum AttributeError {
@@ -82,6 +72,58 @@ pub enum Attribute {
     #[cfg(feature = "ice")]
     #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     ICEControlling(u64),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    ChannelNumber(ChannelNumber),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    Lifetime(u32),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    XorPeerAddress(SocketAddr),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    Data(Bytes),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    XorRelayedAddress(SocketAddr),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    RequestedAddressFamily(AddressFamily),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    EvenPort(EvenPort),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    RequestedTransport(TransportProtocol),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    DontFragment,
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    ReservationToken(u64),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    AdditionalAddressFamily(AddressFamily),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    AddressErrorCode(AddressErrorCode),
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    ICMP(ICMP),
 }
 
 impl Attribute {
@@ -90,7 +132,92 @@ impl Attribute {
         data: &mut Bytes,
         long_transaction_id: [u8; 16],
     ) -> Result<Self, AttributeError> {
-        deserialize::try_get_attribute_from_bytes(data, long_transaction_id)
+        data.try_get_attribute(long_transaction_id)
+    }
+}
+
+/// Trait for types that can be serialized as STUN attributes.
+pub trait SerializeAttribute {
+    /// Serialize the value as a STUN attribute with a given type into the
+    /// provided buffer.
+    fn serialize(&self, attribute_type: u16, buffer: &mut BytesMut);
+}
+
+/// Helper trait for writing STUN attributes.
+trait InternalBytesMutExt {
+    /// Put a STUN attribute header into the byte stream.
+    fn put_attribute_header(&mut self, attribute_type: u16, attribute_length: u16);
+}
+
+impl InternalBytesMutExt for BytesMut {
+    fn put_attribute_header(&mut self, attribute_type: u16, attribute_length: u16) {
+        let header = AttributeHeader {
+            attribute_type: U16::new(attribute_type),
+            attribute_length: U16::new(attribute_length),
+        };
+
+        self.extend_from_slice(header.as_bytes());
+    }
+}
+
+/// Helper trait for reading STUN attributes.
+trait InternalBytesExt {
+    /// Try to get a STUN attribute from the byte stream.
+    fn try_get_attribute(
+        &mut self,
+        long_transaction_id: [u8; 16],
+    ) -> Result<Attribute, AttributeError>;
+
+    /// Try to get a STUN attribute header from the byte stream.
+    fn try_get_attribute_header(&mut self) -> Result<AttributeHeader, AttributeError>;
+}
+
+impl InternalBytesExt for Bytes {
+    fn try_get_attribute(
+        &mut self,
+        long_transaction_id: [u8; 16],
+    ) -> Result<Attribute, AttributeError> {
+        let header = self.try_get_attribute_header()?;
+
+        if self.len() < header.padded_value_length() {
+            return Err(AttributeError::InvalidAttribute);
+        }
+
+        let mut value = self.slice(..header.value_length());
+
+        self.advance(header.padded_value_length());
+
+        let at = header.attribute_type.get();
+
+        #[allow(unused_mut)]
+        let mut res = value.try_get_common_attribute_value(at, long_transaction_id)?;
+
+        #[cfg(feature = "ice")]
+        if res.is_none() {
+            res = value.try_get_ice_attribute_value(at)?;
+        }
+
+        #[cfg(feature = "turn")]
+        if res.is_none() {
+            res = value.try_get_turn_attribute_value(at, long_transaction_id)?;
+        }
+
+        let res = res.ok_or(AttributeError::UnknownAttribute(at))?;
+
+        if !value.is_empty() {
+            return Err(AttributeError::InvalidAttribute);
+        }
+
+        Ok(res)
+    }
+
+    fn try_get_attribute_header(&mut self) -> Result<AttributeHeader, AttributeError> {
+        let (header, _) = AttributeHeader::read_from_prefix(self)
+            .map_err(|_| AttributeError::InvalidAttribute)?;
+
+        self.advance(std::mem::size_of_val(&header));
+
+        Ok(header)
     }
 }
 
@@ -114,217 +241,22 @@ impl AttributeHeader {
     }
 }
 
-/// SHA-1 hash type.
-pub type Sha1Hash = [u8; 20];
-
-/// SHA-256 hash type.
-pub type FullSha256Hash = [u8; 32];
-
-/// SHA-256 hash type.
-#[derive(Copy, Clone)]
-pub enum Sha256Hash {
-    Truncated16([u8; 16]),
-    Truncated20([u8; 20]),
-    Truncated24([u8; 24]),
-    Truncated28([u8; 28]),
-    Full(FullSha256Hash),
-}
-
-/// Attribute text value.
-#[derive(Clone)]
-pub struct Text {
-    inner: Bytes,
-}
-
-impl Text {
-    /// Create a text value from a given string.
-    #[inline]
-    pub const fn from_static_str(s: &'static str) -> Self {
-        Self {
-            inner: Bytes::from_static(s.as_bytes()),
-        }
-    }
-
-    /// Return the text value as a string slice.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        // SAFETY: The inner `Bytes` value is guaranteed to represent a valid
-        //   UTF-8 string.
-        unsafe { std::str::from_utf8_unchecked(&self.inner) }
-    }
-}
-
-impl Deref for Text {
-    type Target = str;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl From<&str> for Text {
-    #[inline]
-    fn from(s: &str) -> Self {
-        Self::from(String::from(s))
-    }
-}
-
-impl From<String> for Text {
-    #[inline]
-    fn from(s: String) -> Self {
-        Self {
-            inner: Bytes::from(s),
-        }
-    }
-}
-
-impl TryFrom<Bytes> for Text {
-    type Error = std::str::Utf8Error;
-
-    #[inline]
-    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
-        std::str::from_utf8(&value)?;
-
-        let res = Self { inner: value };
-
-        Ok(res)
-    }
-}
-
-/// Error code attribute.
-#[derive(Clone)]
-pub struct ErrorCode {
-    code: u16,
-    msg: Text,
-}
-
-impl ErrorCode {
-    pub const BAD_REQUEST: Self = Self::new_static(400, "Bad Request");
-    pub const UNAUTHORIZED: Self = Self::new_static(401, "Unauthorized");
-    pub const UNKNOWN_ATTRIBUTES: Self = Self::new_static(420, "Unknown Attributes");
-
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
-    pub const ROLE_CONFLICT: Self = Self::new_static(487, "Role Conflict");
-
-    /// Create a new error code with a given numeric code and a message.
-    #[inline]
-    pub const fn new_static(code: u16, msg: &'static str) -> Self {
-        Self {
-            code,
-            msg: Text::from_static_str(msg),
-        }
-    }
-
-    /// Create a new error code with a given numeric code and a message.
-    pub fn new<T>(code: u16, msg: T) -> Self
-    where
-        T: Into<Text>,
-    {
-        Self {
-            code,
-            msg: msg.into(),
-        }
-    }
-
-    /// Get the error code number.
-    #[inline]
-    pub fn code(&self) -> u16 {
-        self.code
-    }
-
-    /// Get the error message.
-    #[inline]
-    pub fn message(&self) -> &str {
-        &self.msg
-    }
-}
-
-/// Error code attribute header.
-#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
-#[repr(C)]
-struct ErrorCodeHeader {
-    padding: [u8; 2],
-    class: u8,
-    number: u8,
-}
-
-/// Mapped address attribute header.
-#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
-#[repr(C)]
-struct MappedAddrHeader {
-    padding: u8,
-    family: u8,
-}
-
-/// Mapped IPv4 address.
-#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
-#[repr(C)]
-struct MappedIpv4Addr {
-    port: U16,
-    addr: [u8; 4],
-}
-
-impl From<MappedIpv4Addr> for SocketAddrV4 {
-    fn from(addr: MappedIpv4Addr) -> Self {
-        let ip = Ipv4Addr::from_octets(addr.addr);
-
-        let port = addr.port.get();
-
-        SocketAddrV4::new(ip, port)
-    }
-}
-
-/// Mapped IPv6 address.
-#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
-#[repr(C)]
-struct MappedIpv6Addr {
-    port: U16,
-    addr: [u8; 16],
-}
-
-impl From<MappedIpv6Addr> for SocketAddrV6 {
-    fn from(addr: MappedIpv6Addr) -> Self {
-        let ip = Ipv6Addr::from_octets(addr.addr);
-
-        let port = addr.port.get();
-
-        SocketAddrV6::new(ip, port, 0, 0)
-    }
-}
-
-/// Password algorithm.
-#[derive(Clone)]
-pub enum PasswordAlgorithm {
-    Md5,
-    Sha256,
-}
-
-impl PasswordAlgorithm {
-    /// Get the password algorithm ID.
-    fn id(&self) -> u16 {
-        match *self {
-            Self::Md5 => 0x0001,
-            Self::Sha256 => 0x0002,
-        }
-    }
-}
-
-/// Password algorithm attribute header.
-#[derive(FromBytes, KnownLayout, Immutable, IntoBytes, Unaligned)]
-#[repr(C)]
-struct PasswordAlgorithmHeader {
-    algorithm: U16,
-    parameters_length: U16,
-}
-
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
     use zerocopy::network_endian::U16;
 
-    use super::{AttributeHeader, Text};
+    use super::{Attribute, AttributeError, AttributeHeader};
+
+    /// Parse a single attribute from a raw attribute slice.
+    fn parse(bytes: &[u8], long_transaction_id: [u8; 16]) -> Result<Attribute, AttributeError> {
+        Attribute::from_bytes(&mut Bytes::copy_from_slice(bytes), long_transaction_id)
+    }
+
+    /// Check whether a result is the `InvalidAttribute` error.
+    fn is_invalid(res: Result<Attribute, AttributeError>) -> bool {
+        matches!(res, Err(AttributeError::InvalidAttribute))
+    }
 
     #[test]
     fn test_attribute_header_lengths() {
@@ -351,11 +283,26 @@ mod tests {
     }
 
     #[test]
-    fn test_text() {
-        let t = Text::try_from(Bytes::from_static(b"bytes")).unwrap();
+    fn test_parse_truncated_header() {
+        assert!(is_invalid(parse(&[0x00, 0x01], [0u8; 16])));
+    }
 
-        assert_eq!(t.as_str(), "bytes");
+    #[test]
+    fn test_parse_value_exceeds_buffer() {
+        // declared length is 8 but only 4 value bytes are present
+        let mut input = vec![0x00, 0x06, 0x00, 0x08];
 
-        assert!(Text::try_from(Bytes::from_static(&[0xff, 0xfe])).is_err());
+        input.extend_from_slice(b"test");
+
+        assert!(is_invalid(parse(&input, [0u8; 16])));
+    }
+
+    #[test]
+    fn test_parse_unknown_attribute_type() {
+        let input = &[0x70, 0x00, 0x00, 0x00];
+
+        let res = parse(input, [0u8; 16]);
+
+        assert!(matches!(res, Err(AttributeError::UnknownAttribute(0x7000))));
     }
 }

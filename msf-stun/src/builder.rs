@@ -4,8 +4,13 @@ use bytes::{Bytes, BytesMut};
 
 use crate::{
     attribute::{ErrorCode, FullSha256Hash, PasswordAlgorithm},
-    writer::MessageBuffer,
+    writer::{MessageBuffer, MessageWriter},
     Message, MessageClass, Method, TransactionID, RFC_5389_MAGIC_COOKIE,
+};
+
+#[cfg(feature = "turn")]
+use crate::attribute::{
+    AddressErrorCode, AddressFamily, ChannelNumber, EvenPort, TransportProtocol, ICMP,
 };
 
 /// Message integrity algorithm choice.
@@ -23,34 +28,17 @@ pub struct MessageBuilder<'a> {
     magic_cookie: u32,
     transaction_id: TransactionID,
 
-    mapped_address: Option<SocketAddr>,
-    xor_mapped_address: Option<SocketAddr>,
-    username: Option<&'a str>,
-    userhash: Option<[u8; 32]>,
     message_integrity_key: Option<&'a [u8]>,
     message_integrity_algorithm: MessageIntegrityAlgorithm,
     fingerprint: bool,
-    error_code: Option<ErrorCode>,
-    realm: Option<&'a str>,
-    nonce: Option<&'a str>,
-    password_algorithms: Option<&'a [PasswordAlgorithm]>,
-    password_algorithm: Option<PasswordAlgorithm>,
-    unknown_attributes: Option<&'a [u16]>,
-    software: Option<&'a str>,
-    alternate_server: Option<SocketAddr>,
-    alternate_domain: Option<&'a str>,
+
+    common: CommonAttributes<'a>,
 
     #[cfg(feature = "ice")]
-    priority: Option<u32>,
+    ice: ICEAttributes,
 
-    #[cfg(feature = "ice")]
-    use_candidate: bool,
-
-    #[cfg(feature = "ice")]
-    ice_controlled: Option<u64>,
-
-    #[cfg(feature = "ice")]
-    ice_controlling: Option<u64>,
+    #[cfg(feature = "turn")]
+    turn: TURNAttributes<'a>,
 }
 
 impl<'a> MessageBuilder<'a> {
@@ -69,34 +57,17 @@ impl<'a> MessageBuilder<'a> {
             magic_cookie,
             transaction_id,
 
-            mapped_address: None,
-            xor_mapped_address: None,
-            username: None,
-            userhash: None,
             message_integrity_key: None,
             message_integrity_algorithm: MessageIntegrityAlgorithm::Unknown,
             fingerprint: false,
-            error_code,
-            realm: None,
-            nonce: None,
-            password_algorithms: None,
-            password_algorithm: None,
-            unknown_attributes: None,
-            software: None,
-            alternate_server: None,
-            alternate_domain: None,
+
+            common: CommonAttributes::new(error_code),
 
             #[cfg(feature = "ice")]
-            priority: None,
+            ice: ICEAttributes::new(),
 
-            #[cfg(feature = "ice")]
-            use_candidate: false,
-
-            #[cfg(feature = "ice")]
-            ice_controlled: None,
-
-            #[cfg(feature = "ice")]
-            ice_controlling: None,
+            #[cfg(feature = "turn")]
+            turn: TURNAttributes::new(),
         }
     }
 
@@ -200,28 +171,28 @@ impl<'a> MessageBuilder<'a> {
     /// Set mapped address.
     #[inline]
     pub fn mapped_address(&mut self, addr: SocketAddr) -> &mut Self {
-        self.mapped_address = Some(addr);
+        self.common.mapped_address = Some(addr);
         self
     }
 
     /// Set XOR mapped address.
     #[inline]
     pub fn xor_mapped_address(&mut self, addr: SocketAddr) -> &mut Self {
-        self.xor_mapped_address = Some(addr);
+        self.common.xor_mapped_address = Some(addr);
         self
     }
 
     /// Set username.
     #[inline]
     pub fn username(&mut self, username: &'a str) -> &mut Self {
-        self.username = Some(username);
+        self.common.username = Some(username);
         self
     }
 
     /// Set userhash.
     #[inline]
     pub fn userhash(&mut self, userhash: FullSha256Hash) -> &mut Self {
-        self.userhash = Some(userhash);
+        self.common.userhash = Some(userhash);
         self
     }
 
@@ -252,102 +223,195 @@ impl<'a> MessageBuilder<'a> {
     /// Set error code.
     #[inline]
     pub fn error_code(&mut self, error_code: ErrorCode) -> &mut Self {
-        self.error_code = Some(error_code);
+        self.common.error_code = Some(error_code);
         self
     }
 
     /// Set realm.
     #[inline]
     pub fn realm(&mut self, realm: &'a str) -> &mut Self {
-        self.realm = Some(realm);
+        self.common.realm = Some(realm);
         self
     }
 
     /// Set nonce.
     #[inline]
     pub fn nonce(&mut self, nonce: &'a str) -> &mut Self {
-        self.nonce = Some(nonce);
+        self.common.nonce = Some(nonce);
         self
     }
 
     /// Set password algorithms.
     #[inline]
     pub fn password_algorithms(&mut self, algorithms: &'a [PasswordAlgorithm]) -> &mut Self {
-        self.password_algorithms = Some(algorithms);
+        self.common.password_algorithms = Some(algorithms);
         self
     }
 
     /// Set password algorithm.
     #[inline]
     pub fn password_algorithm(&mut self, algorithm: PasswordAlgorithm) -> &mut Self {
-        self.password_algorithm = Some(algorithm);
+        self.common.password_algorithm = Some(algorithm);
         self
     }
 
     /// Set unknown attributes.
     #[inline]
     pub fn unknown_attributes(&mut self, unknown_attributes: &'a [u16]) -> &mut Self {
-        self.unknown_attributes = Some(unknown_attributes);
+        self.common.unknown_attributes = Some(unknown_attributes);
         self
     }
 
     /// Set software.
     #[inline]
     pub fn software(&mut self, software: &'a str) -> &mut Self {
-        self.software = Some(software);
+        self.common.software = Some(software);
         self
     }
 
     /// Set alternate server.
     #[inline]
     pub fn alternate_server(&mut self, server: SocketAddr) -> &mut Self {
-        self.alternate_server = Some(server);
+        self.common.alternate_server = Some(server);
         self
     }
 
     /// Set alternate domain.
     #[inline]
     pub fn alternate_domain(&mut self, domain: &'a str) -> &mut Self {
-        self.alternate_domain = Some(domain);
+        self.common.alternate_domain = Some(domain);
         self
     }
+}
 
+#[cfg(feature = "ice")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
+impl MessageBuilder<'_> {
     /// Set ICE candidate priority.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn priority(&mut self, priority: u32) -> &mut Self {
-        self.priority = Some(priority);
+        self.ice.priority = Some(priority);
         self
     }
 
     /// Set the use candidate ICE flag.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn use_candidate(&mut self, enable: bool) -> &mut Self {
-        self.use_candidate = enable;
+        self.ice.use_candidate = enable;
         self
     }
 
     /// Set the ICE controlled attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn ice_controlled(&mut self, n: u64) -> &mut Self {
-        self.ice_controlled = Some(n);
+        self.ice.ice_controlled = Some(n);
         self
     }
 
     /// Set the ICE controlling attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn ice_controlling(&mut self, n: u64) -> &mut Self {
-        self.ice_controlling = Some(n);
+        self.ice.ice_controlling = Some(n);
+        self
+    }
+}
+
+#[cfg(feature = "turn")]
+#[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+impl<'a> MessageBuilder<'a> {
+    /// Set the channel number attribute.
+    #[inline]
+    pub fn channel_number(&mut self, channel_number: ChannelNumber) -> &mut Self {
+        self.turn.channel_number = Some(channel_number);
         self
     }
 
+    /// Set the lifetime attribute.
+    #[inline]
+    pub fn lifetime(&mut self, lifetime: u32) -> &mut Self {
+        self.turn.lifetime = Some(lifetime);
+        self
+    }
+
+    /// Set the XOR peer address attribute.
+    #[inline]
+    pub fn xor_peer_address(&mut self, addr: SocketAddr) -> &mut Self {
+        self.turn.xor_peer_address = Some(addr);
+        self
+    }
+
+    /// Set the data attribute.
+    #[inline]
+    pub fn data(&mut self, data: &'a [u8]) -> &mut Self {
+        self.turn.data = Some(data);
+        self
+    }
+
+    /// Set the XOR relayed address attribute.
+    #[inline]
+    pub fn xor_relayed_address(&mut self, addr: SocketAddr) -> &mut Self {
+        self.turn.xor_relayed_address = Some(addr);
+        self
+    }
+
+    /// Set the requested address family attribute.
+    #[inline]
+    pub fn requested_address_family(&mut self, family: AddressFamily) -> &mut Self {
+        self.turn.requested_address_family = Some(family);
+        self
+    }
+
+    /// Set the even port attribute.
+    #[inline]
+    pub fn even_port(&mut self, event_port: EvenPort) -> &mut Self {
+        self.turn.even_port = Some(event_port);
+        self
+    }
+
+    /// Set the requested transport attribute.
+    #[inline]
+    pub fn requested_transport(&mut self, transport: TransportProtocol) -> &mut Self {
+        self.turn.requested_transport = Some(transport);
+        self
+    }
+
+    /// Set the don't fragment attribute.
+    #[inline]
+    pub fn dont_fragment(&mut self, enable: bool) -> &mut Self {
+        self.turn.dont_fragment = enable;
+        self
+    }
+
+    /// Set the reservation token attribute.
+    #[inline]
+    pub fn reservation_token(&mut self, token: u64) -> &mut Self {
+        self.turn.reservation_token = Some(token);
+        self
+    }
+
+    /// Set the additional address family attribute.
+    #[inline]
+    pub fn additional_address_family(&mut self, family: AddressFamily) -> &mut Self {
+        self.turn.additional_address_family = Some(family);
+        self
+    }
+
+    /// Set the address error code attribute.
+    #[inline]
+    pub fn address_error_code(&mut self, error_code: AddressErrorCode) -> &mut Self {
+        self.turn.address_error_code = Some(error_code);
+        self
+    }
+
+    /// Set the ICMP attribute.
+    #[inline]
+    pub fn icmp(&mut self, icmp: ICMP) -> &mut Self {
+        self.turn.icmp = Some(icmp);
+        self
+    }
+}
+
+impl MessageBuilder<'_> {
     /// Serialize the message into a given buffer.
     pub fn serialize(&self, buffer: &mut BytesMut) {
         let mut buffer = MessageBuffer::new(buffer);
@@ -360,6 +424,82 @@ impl<'a> MessageBuilder<'a> {
             self.transaction_id,
         );
 
+        self.common.serialize_attributes(&mut writer);
+
+        #[cfg(feature = "ice")]
+        self.ice.serialize_attributes(&mut writer);
+
+        #[cfg(feature = "turn")]
+        self.turn.serialize_attributes(&mut writer);
+
+        if let Some(key) = self.message_integrity_key {
+            match self.message_integrity_algorithm {
+                MessageIntegrityAlgorithm::Sha1 => writer.put_message_integrity(key),
+                MessageIntegrityAlgorithm::Sha256 => writer.put_message_integrity_sha256(key),
+                MessageIntegrityAlgorithm::Unknown => {
+                    writer.put_message_integrity(key);
+                    writer.put_message_integrity_sha256(key);
+                }
+            }
+        }
+
+        if self.fingerprint {
+            writer.put_fingerprint();
+        }
+
+        writer.finalize();
+    }
+
+    /// Finalize the message and return it as `Bytes`.
+    pub fn build(&self) -> Bytes {
+        let mut res = BytesMut::new();
+
+        self.serialize(&mut res);
+
+        res.freeze()
+    }
+}
+
+/// Common STUN message attributes.
+struct CommonAttributes<'a> {
+    mapped_address: Option<SocketAddr>,
+    xor_mapped_address: Option<SocketAddr>,
+    username: Option<&'a str>,
+    userhash: Option<[u8; 32]>,
+    error_code: Option<ErrorCode>,
+    realm: Option<&'a str>,
+    nonce: Option<&'a str>,
+    password_algorithms: Option<&'a [PasswordAlgorithm]>,
+    password_algorithm: Option<PasswordAlgorithm>,
+    unknown_attributes: Option<&'a [u16]>,
+    software: Option<&'a str>,
+    alternate_server: Option<SocketAddr>,
+    alternate_domain: Option<&'a str>,
+}
+
+impl CommonAttributes<'_> {
+    /// Create a new instance with no attributes set.
+    #[inline]
+    const fn new(error_code: Option<ErrorCode>) -> Self {
+        Self {
+            mapped_address: None,
+            xor_mapped_address: None,
+            username: None,
+            userhash: None,
+            error_code,
+            realm: None,
+            nonce: None,
+            password_algorithms: None,
+            password_algorithm: None,
+            unknown_attributes: None,
+            software: None,
+            alternate_server: None,
+            alternate_domain: None,
+        }
+    }
+
+    /// Serialize the attributes.
+    fn serialize_attributes(&self, writer: &mut MessageWriter<'_>) {
         if let Some(status) = self.error_code.as_ref() {
             writer.put_error_code(status);
         }
@@ -411,51 +551,144 @@ impl<'a> MessageBuilder<'a> {
         if let Some(software) = self.software {
             writer.put_software(software);
         }
+    }
+}
 
-        #[cfg(feature = "ice")]
-        {
-            if let Some(priority) = self.priority {
-                writer.put_priority(priority);
-            }
+/// ICE attributes.
+#[cfg(feature = "ice")]
+struct ICEAttributes {
+    priority: Option<u32>,
+    use_candidate: bool,
+    ice_controlled: Option<u64>,
+    ice_controlling: Option<u64>,
+}
 
-            if self.use_candidate {
-                writer.put_use_candidate();
-            }
-
-            if let Some(n) = self.ice_controlled {
-                writer.put_ice_controlled(n);
-            }
-
-            if let Some(n) = self.ice_controlling {
-                writer.put_ice_controlling(n);
-            }
+#[cfg(feature = "ice")]
+impl ICEAttributes {
+    /// Create a new instance with no attributes set.
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            priority: None,
+            use_candidate: false,
+            ice_controlled: None,
+            ice_controlling: None,
         }
-
-        if let Some(key) = self.message_integrity_key {
-            match self.message_integrity_algorithm {
-                MessageIntegrityAlgorithm::Sha1 => writer.put_message_integrity(key),
-                MessageIntegrityAlgorithm::Sha256 => writer.put_message_integrity_sha256(key),
-                MessageIntegrityAlgorithm::Unknown => {
-                    writer.put_message_integrity(key);
-                    writer.put_message_integrity_sha256(key);
-                }
-            }
-        }
-
-        if self.fingerprint {
-            writer.put_fingerprint();
-        }
-
-        writer.finalize();
     }
 
-    /// Finalize the message and return it as `Bytes`.
-    pub fn build(&self) -> Bytes {
-        let mut res = BytesMut::new();
+    /// Serialize the attributes.
+    fn serialize_attributes(&self, writer: &mut MessageWriter<'_>) {
+        if let Some(priority) = self.priority {
+            writer.put_priority(priority);
+        }
 
-        self.serialize(&mut res);
+        if self.use_candidate {
+            writer.put_use_candidate();
+        }
 
-        res.freeze()
+        if let Some(n) = self.ice_controlled {
+            writer.put_ice_controlled(n);
+        }
+
+        if let Some(n) = self.ice_controlling {
+            writer.put_ice_controlling(n);
+        }
+    }
+}
+
+/// TURN attributes.
+#[cfg(feature = "turn")]
+struct TURNAttributes<'a> {
+    channel_number: Option<ChannelNumber>,
+    lifetime: Option<u32>,
+    xor_peer_address: Option<SocketAddr>,
+    data: Option<&'a [u8]>,
+    xor_relayed_address: Option<SocketAddr>,
+    requested_address_family: Option<AddressFamily>,
+    even_port: Option<EvenPort>,
+    requested_transport: Option<TransportProtocol>,
+    dont_fragment: bool,
+    reservation_token: Option<u64>,
+    additional_address_family: Option<AddressFamily>,
+    address_error_code: Option<AddressErrorCode>,
+    icmp: Option<ICMP>,
+}
+
+#[cfg(feature = "turn")]
+impl TURNAttributes<'_> {
+    /// Create a new instance with no attributes set.
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            channel_number: None,
+            lifetime: None,
+            xor_peer_address: None,
+            data: None,
+            xor_relayed_address: None,
+            requested_address_family: None,
+            even_port: None,
+            requested_transport: None,
+            dont_fragment: false,
+            reservation_token: None,
+            additional_address_family: None,
+            address_error_code: None,
+            icmp: None,
+        }
+    }
+
+    /// Serialize the attributes.
+    fn serialize_attributes(&self, writer: &mut MessageWriter<'_>) {
+        if let Some(channel_number) = self.channel_number {
+            writer.put_channel_number(channel_number);
+        }
+
+        if let Some(lifetime) = self.lifetime {
+            writer.put_lifetime(lifetime);
+        }
+
+        if let Some(addr) = self.xor_peer_address {
+            writer.put_xor_peer_address(addr);
+        }
+
+        if let Some(data) = self.data {
+            writer.put_data(data);
+        }
+
+        if let Some(addr) = self.xor_relayed_address {
+            writer.put_xor_relayed_address(addr);
+        }
+
+        if let Some(family) = self.requested_address_family {
+            writer.put_requested_address_family(family);
+        }
+
+        if let Some(even_port) = self.even_port {
+            writer.put_even_port(even_port);
+        }
+
+        if let Some(transport) = self.requested_transport {
+            writer.put_requested_transport(transport);
+        }
+
+        if self.dont_fragment {
+            writer.put_dont_fragment();
+        }
+
+        if let Some(token) = self.reservation_token {
+            writer.put_reservation_token(token);
+        }
+
+        if let Some(family) = self.additional_address_family {
+            writer.put_additional_address_family(family);
+        }
+
+        if let Some(error_code) = self.address_error_code.as_ref() {
+            writer.put_address_error_code(error_code);
+        }
+
+        if let Some(icmp) = self.icmp.as_ref() {
+            writer.put_icmp(icmp);
+        }
     }
 }
 

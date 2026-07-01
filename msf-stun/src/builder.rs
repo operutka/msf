@@ -412,8 +412,17 @@ impl<'a> MessageBuilder<'a> {
 }
 
 impl MessageBuilder<'_> {
+    /// Serialize the message and return it as `Bytes`.
+    pub fn build(&self) -> Bytes {
+        let mut res = BytesMut::new();
+
+        self.build_to_buf(&mut res);
+
+        res.freeze()
+    }
+
     /// Serialize the message into a given buffer.
-    pub fn serialize(&self, buffer: &mut BytesMut) {
+    pub fn build_to_buf(&self, buffer: &mut BytesMut) {
         let mut buffer = MessageBuffer::new(buffer);
 
         // create a buffer with an empty header
@@ -448,15 +457,6 @@ impl MessageBuilder<'_> {
         }
 
         writer.finalize();
-    }
-
-    /// Finalize the message and return it as `Bytes`.
-    pub fn build(&self) -> Bytes {
-        let mut res = BytesMut::new();
-
-        self.serialize(&mut res);
-
-        res.freeze()
     }
 }
 

@@ -735,7 +735,7 @@ impl StunMessageExt for stun::Message {
                 .ok_or(StunRequestError::InvalidCredentials)?;
 
             if username == user {
-                self.check_st_credentials(pwd.as_bytes())
+                self.check_message_integrity(pwd.as_bytes())
                     .map_err(StunRequestError::from)
             } else {
                 Err(StunRequestError::InvalidCredentials)

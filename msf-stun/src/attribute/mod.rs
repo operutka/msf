@@ -23,7 +23,9 @@ use self::turn::BytesExt as _;
 
 pub use self::{
     collection::Attributes,
-    common::{ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha1Hash, Sha256Hash, Text},
+    common::{
+        ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha1Hash, Sha256Hash, Sha256Length, Text,
+    },
 };
 
 #[cfg(feature = "turn")]

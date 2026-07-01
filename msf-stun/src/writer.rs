@@ -10,7 +10,7 @@ use zerocopy::{
 };
 
 use crate::{
-    attribute::{common, ErrorCode, PasswordAlgorithm, SerializeAttribute},
+    attribute::{common, ErrorCode, PasswordAlgorithm, SerializeAttribute, Sha256Length},
     MessageClass, MessageHeader, Method, TransactionID,
 };
 
@@ -169,10 +169,12 @@ impl MessageWriter<'_> {
     }
 
     /// Write the message integrity SHA-256 attribute.
-    pub fn put_message_integrity_sha256(&mut self, key: &[u8]) {
-        super::calculate_message_integrity_sha256(key, &self.buffer[self.start..])
-            .as_ref()
-            .serialize(common::ATTR_TYPE_MESSAGE_INTEGRITY_SHA256, self);
+    pub fn put_message_integrity_sha256(&mut self, key: &[u8], length: Sha256Length) {
+        let hash = super::calculate_message_integrity_sha256(key, &self.buffer[self.start..]);
+
+        let prefix = &hash[..length as usize];
+
+        prefix.serialize(common::ATTR_TYPE_MESSAGE_INTEGRITY_SHA256, self);
     }
 
     /// Write the fingerprint attribute.

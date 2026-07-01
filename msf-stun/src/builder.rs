@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use bytes::{Bytes, BytesMut};
 
 use crate::{
-    attribute::{ErrorCode, FullSha256Hash, PasswordAlgorithm},
+    attribute::{ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha256Length},
     writer::{MessageBuffer, MessageWriter},
     Message, MessageClass, Method, TransactionID, RFC_5389_MAGIC_COOKIE,
 };
@@ -30,6 +30,7 @@ pub struct MessageBuilder<'a> {
 
     message_integrity_key: Option<&'a [u8]>,
     message_integrity_algorithm: MessageIntegrityAlgorithm,
+    message_integrity_sha256_length: Sha256Length,
     fingerprint: bool,
 
     common: CommonAttributes<'a>,
@@ -59,6 +60,7 @@ impl<'a> MessageBuilder<'a> {
 
             message_integrity_key: None,
             message_integrity_algorithm: MessageIntegrityAlgorithm::Unknown,
+            message_integrity_sha256_length: Sha256Length::Full,
             fingerprint: false,
 
             common: CommonAttributes::new(error_code),
@@ -210,6 +212,13 @@ impl<'a> MessageBuilder<'a> {
         algorithm: MessageIntegrityAlgorithm,
     ) -> &mut Self {
         self.message_integrity_algorithm = algorithm;
+        self
+    }
+
+    /// Configure the length of the SHA-256 message integrity attribute.
+    #[inline]
+    pub fn message_integrity_sha256_length(&mut self, length: Sha256Length) -> &mut Self {
+        self.message_integrity_sha256_length = length;
         self
     }
 
@@ -444,10 +453,12 @@ impl MessageBuilder<'_> {
         if let Some(key) = self.message_integrity_key {
             match self.message_integrity_algorithm {
                 MessageIntegrityAlgorithm::Sha1 => writer.put_message_integrity(key),
-                MessageIntegrityAlgorithm::Sha256 => writer.put_message_integrity_sha256(key),
+                MessageIntegrityAlgorithm::Sha256 => {
+                    writer.put_message_integrity_sha256(key, self.message_integrity_sha256_length);
+                }
                 MessageIntegrityAlgorithm::Unknown => {
                     writer.put_message_integrity(key);
-                    writer.put_message_integrity_sha256(key);
+                    writer.put_message_integrity_sha256(key, self.message_integrity_sha256_length);
                 }
             }
         }
@@ -701,7 +712,7 @@ mod tests {
     use super::{MessageBuilder, MessageIntegrityAlgorithm};
 
     use crate::{
-        attribute::{Attribute, ErrorCode, PasswordAlgorithm},
+        attribute::{Attribute, ErrorCode, PasswordAlgorithm, Sha256Length},
         InvalidMessage, Message, MessageClass, Method,
     };
 
@@ -933,8 +944,46 @@ mod tests {
             .parse_message()
             .unwrap();
 
-        assert!(msg.check_st_credentials(key).is_ok());
-        assert!(msg.check_st_credentials(b"wrong-key").is_err());
+        assert!(msg.check_message_integrity(key).is_ok());
+        assert!(msg.check_message_integrity(b"wrong-key").is_err());
+    }
+
+    #[test]
+    fn test_message_integrity_sha256() {
+        let key = b"secret-key";
+
+        let msg = MessageBuilder::binding_request([0u8; 12])
+            .username("alice")
+            .message_integrity_key(key)
+            .message_integrity_algorithm(MessageIntegrityAlgorithm::Sha256)
+            .message_integrity_sha256_length(Sha256Length::Truncated20)
+            .build()
+            .parse_message()
+            .unwrap();
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Truncated16)
+            .is_ok());
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Truncated20)
+            .is_ok());
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Truncated24)
+            .is_err());
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Truncated28)
+            .is_err());
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Full)
+            .is_err());
+
+        assert!(msg
+            .check_message_integrity_sha256(b"wrong-key", Sha256Length::Full)
+            .is_err());
     }
 
     #[test]
@@ -947,7 +996,10 @@ mod tests {
             .parse_message()
             .unwrap();
 
-        assert!(msg.check_st_credentials(key).is_ok());
+        assert!(msg.check_message_integrity(key).is_ok());
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Full)
+            .is_ok());
 
         let has_sha1 = msg
             .attributes()

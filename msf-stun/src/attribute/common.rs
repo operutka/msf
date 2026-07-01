@@ -33,6 +33,18 @@ pub type Sha1Hash = [u8; 20];
 /// SHA-256 hash type.
 pub type FullSha256Hash = [u8; 32];
 
+/// SHA-256 hash length.
+#[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Sha256Length {
+    Truncated16 = 16,
+    Truncated20 = 20,
+    Truncated24 = 24,
+    Truncated28 = 28,
+    #[default]
+    Full = 32,
+}
+
 /// SHA-256 hash type.
 #[derive(Copy, Clone)]
 pub enum Sha256Hash {
@@ -41,6 +53,18 @@ pub enum Sha256Hash {
     Truncated24([u8; 24]),
     Truncated28([u8; 28]),
     Full(FullSha256Hash),
+}
+
+impl AsRef<[u8]> for Sha256Hash {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Truncated16(hash) => hash,
+            Self::Truncated20(hash) => hash,
+            Self::Truncated24(hash) => hash,
+            Self::Truncated28(hash) => hash,
+            Self::Full(hash) => hash,
+        }
+    }
 }
 
 /// Attribute text value.

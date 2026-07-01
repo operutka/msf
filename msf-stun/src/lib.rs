@@ -24,7 +24,7 @@ use self::attribute::AttributeError;
 pub use self::{
     attribute::{
         Attribute, Attributes, ErrorCode, FullSha256Hash, PasswordAlgorithm, Sha1Hash, Sha256Hash,
-        Text,
+        Sha256Length, Text,
     },
     builder::{MessageBuilder, MessageIntegrityAlgorithm},
 };
@@ -410,26 +410,65 @@ impl Message {
         }
     }
 
-    /// Check short-term credentials.
-    pub fn check_st_credentials(&self, key: &[u8]) -> Result<(), IntegrityError> {
-        if let Some(offset) = self.message_integrity_offset {
-            let hash = self
-                .attributes
-                .iter()
-                .find_map(|attr| match attr {
-                    Attribute::MessageIntegrity(hash) => Some(hash),
-                    _ => None,
-                })
-                .copied()
-                .unwrap();
+    /// Check the message integrity.
+    ///
+    /// The method will return `Ok(())` if the message integrity attribute
+    /// exists and the value of the message integrity is correct.
+    pub fn check_message_integrity(&self, key: &[u8]) -> Result<(), IntegrityError> {
+        let offset = self
+            .message_integrity_offset
+            .ok_or(IntegrityError::Missing)?;
 
-            if hash == calculate_message_integrity(key, &self.original[..offset]) {
-                Ok(())
-            } else {
-                Err(IntegrityError::Invalid)
-            }
+        let hash = self
+            .attributes
+            .iter()
+            .find_map(|attr| match attr {
+                Attribute::MessageIntegrity(hash) => Some(hash),
+                _ => None,
+            })
+            .copied()
+            .unwrap();
+
+        if hash == calculate_message_integrity(key, &self.original[..offset]) {
+            Ok(())
         } else {
-            Err(IntegrityError::Missing)
+            Err(IntegrityError::Invalid)
+        }
+    }
+
+    /// Check the SHA-256 message integrity.
+    ///
+    /// The method will return `Ok(())` if the SHA-256 message integrity
+    /// attribute exists and the value of the message integrity is correct. The
+    /// `min_hash_size` parameter specifies the minimum number of bytes that
+    /// the hash in the message integrity attribute must have. If the hash is
+    /// shorter than the specified length, the method will return
+    /// `IntegrityError::Invalid`.
+    pub fn check_message_integrity_sha256(
+        &self,
+        key: &[u8],
+        min_hash_size: Sha256Length,
+    ) -> Result<(), IntegrityError> {
+        let offset = self
+            .message_integrity_sha256_offset
+            .ok_or(IntegrityError::Missing)?;
+
+        let actual = self
+            .attributes
+            .iter()
+            .find_map(|attr| match attr {
+                Attribute::MessageIntegritySha256(hash) => Some(hash.as_ref()),
+                _ => None,
+            })
+            .filter(|hash| hash.len() >= (min_hash_size as usize))
+            .ok_or(IntegrityError::Invalid)?;
+
+        let expected = calculate_message_integrity_sha256(key, &self.original[..offset]);
+
+        if &expected[..actual.len()] == actual {
+            Ok(())
+        } else {
+            Err(IntegrityError::Invalid)
         }
     }
 }
@@ -512,7 +551,8 @@ mod tests {
 
     use super::{
         builder::{MessageBuilder, MessageIntegrityAlgorithm},
-        IntegrityError, InvalidMessage, Message, MessageClass, Method, RFC_5389_MAGIC_COOKIE,
+        IntegrityError, InvalidMessage, Message, MessageClass, Method, Sha256Length,
+        RFC_5389_MAGIC_COOKIE,
     };
 
     /// Assemble a raw STUN frame from a message type and a body of attributes.
@@ -640,33 +680,92 @@ mod tests {
     }
 
     #[test]
-    fn test_fingerprint_and_integrity_round_trip() {
+    fn test_fingerprint_round_trip() {
+        let msg = MessageBuilder::binding_request([1u8; 12])
+            .software("msf")
+            .fingerprint(true)
+            .build();
+
+        let msg = Message::from_frame(msg).expect("message expected");
+
+        assert!(msg.check_fingerprint());
+    }
+
+    #[test]
+    fn test_message_integrity_round_trip() {
         let key = b"key";
 
         let msg = MessageBuilder::binding_request([1u8; 12])
             .username("u")
             .message_integrity_key(key)
             .message_integrity_algorithm(MessageIntegrityAlgorithm::Sha1)
-            .fingerprint(true)
             .build();
 
         let msg = Message::from_frame(msg).expect("message expected");
 
-        assert!(msg.check_st_credentials(key).is_ok());
-        assert!(msg.check_fingerprint());
+        assert!(msg.check_message_integrity(key).is_ok());
+        assert!(matches!(
+            msg.check_message_integrity_sha256(key, Sha256Length::Full),
+            Err(IntegrityError::Missing)
+        ));
     }
 
     #[test]
-    fn test_check_st_credentials_missing() {
+    fn test_message_integrity_sha256_round_trip() {
+        let key = b"key";
+
+        let msg = MessageBuilder::binding_request([1u8; 12])
+            .username("u")
+            .message_integrity_key(key)
+            .message_integrity_algorithm(MessageIntegrityAlgorithm::Sha256)
+            .build();
+
+        let msg = Message::from_frame(msg).expect("message expected");
+
+        assert!(matches!(
+            msg.check_message_integrity(key),
+            Err(IntegrityError::Missing)
+        ));
+
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Full)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_message_integrity_unknown_round_trip() {
+        let key = b"key";
+
+        let msg = MessageBuilder::binding_request([1u8; 12])
+            .username("u")
+            .message_integrity_key(key)
+            .message_integrity_algorithm(MessageIntegrityAlgorithm::Unknown)
+            .build();
+
+        let msg = Message::from_frame(msg).expect("message expected");
+
+        assert!(msg.check_message_integrity(key).is_ok());
+        assert!(msg
+            .check_message_integrity_sha256(key, Sha256Length::Full)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_check_message_integrity_missing() {
+        let key = b"key";
+
         let msg = Message::from_frame(frame(0x0001, RFC_5389_MAGIC_COOKIE, [0u8; 12], &[]))
             .expect("message expected");
 
         assert!(matches!(
-            msg.check_st_credentials(b"key"),
+            msg.check_message_integrity(key),
             Err(IntegrityError::Missing)
         ));
 
-        assert!(!msg.check_fingerprint());
+        assert!(matches!(
+            msg.check_message_integrity_sha256(key, Sha256Length::Full),
+            Err(IntegrityError::Missing)
+        ));
     }
 
     #[test]

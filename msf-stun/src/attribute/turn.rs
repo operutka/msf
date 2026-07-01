@@ -130,6 +130,17 @@ impl Deref for AddressErrorCode {
 }
 
 /// ICMP attribute value.
+///
+/// # Note
+/// The attribute layout strictly follows the TURN specification given by
+/// RFC 8656 which defines the ICMP type and code widths to be 7 and 9 bits
+/// respectively. However, there is an erratum (Errata-ID 8901) stating that
+/// the ICMP type and code widths should be 8 and 8 bits to match the ICMP and
+/// ICMPv6 specifications. The erratum status is "Reported" at the time of
+/// writing this code, so we'll stick to the original specification for now and
+/// possibly change the implementation if the erratum is accepted in the
+/// future. Existing TURN implementations rarely use the ICMP attribute (if at
+/// all), so there should not be any interoperability issues.
 #[derive(Copy, Clone)]
 pub struct ICMP {
     icmp_type: u8,

@@ -470,3 +470,295 @@ impl InternalBytesMutExt for BytesMut {
         self.extend_from_slice(header.as_bytes());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use bytes::{Bytes, BytesMut};
+
+    use crate::attribute::{
+        turn::{AddressErrorCode, AddressFamily, ChannelNumber, EvenPort, TransportProtocol, ICMP},
+        Attribute, AttributeError, SerializeAttribute,
+    };
+
+    /// Parse a single attribute from a raw attribute slice.
+    fn parse(bytes: &[u8], long_transaction_id: [u8; 16]) -> Result<Attribute, AttributeError> {
+        Attribute::from_bytes(&mut Bytes::copy_from_slice(bytes), long_transaction_id)
+    }
+
+    /// Check whether a result is the `InvalidAttribute` error.
+    fn is_invalid(res: Result<Attribute, AttributeError>) -> bool {
+        matches!(res, Err(AttributeError::InvalidAttribute))
+    }
+
+    #[test]
+    fn test_parse_channel_number() {
+        let input = &[0x00, 0x0c, 0x00, 0x04, 0x40, 0x01, 0x00, 0x00];
+
+        let Ok(Attribute::ChannelNumber(cn)) = parse(input, [0u8; 16]) else {
+            panic!("expected a channel number");
+        };
+
+        assert_eq!(cn.channel_number(), 0x4001);
+    }
+
+    #[test]
+    fn test_serialize_channel_number() {
+        let mut b = BytesMut::new();
+
+        ChannelNumber::new(0x4001).serialize(0x000c, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x0c, 0x00, 0x04]);
+        assert_eq!(&b[4..], &[0x40, 0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_lifetime() {
+        let input = &[0x00, 0x0d, 0x00, 0x04, 0x00, 0x00, 0x02, 0x58];
+
+        let Ok(Attribute::Lifetime(lifetime)) = parse(input, [0u8; 16]) else {
+            panic!("expected a lifetime");
+        };
+
+        assert_eq!(lifetime, 600);
+    }
+
+    #[test]
+    fn test_parse_xor_peer_address() {
+        let tid = u128::to_be_bytes(0x2112a442 << 96);
+
+        let input = &[
+            0x00, 0x12, 0x00, 0x08, // attribute header
+            0x00, 0x01, // mapped address header
+            0xa1, 0x47, // XOR-ed port
+            0xe1, 0x12, 0xa6, 0x43, // XOR-ed IP address
+        ];
+
+        let Ok(Attribute::XorPeerAddress(addr)) = parse(input, tid) else {
+            panic!("expected a XOR peer address");
+        };
+
+        assert_eq!(addr, SocketAddr::from(([192, 0, 2, 1], 32853)));
+    }
+
+    #[test]
+    fn test_parse_data() {
+        let input = &[
+            0x00, 0x13, 0x00, 0x05, 0xde, 0xad, 0xbe, 0xef, 0x01, 0, 0, 0,
+        ];
+
+        let Ok(Attribute::Data(data)) = parse(input, [0u8; 16]) else {
+            panic!("expected data");
+        };
+
+        assert_eq!(&data[..], &[0xde, 0xad, 0xbe, 0xef, 0x01]);
+    }
+
+    #[test]
+    fn test_parse_xor_relayed_address() {
+        let tid = u128::to_be_bytes(0x2112a442 << 96);
+
+        let input = &[
+            0x00, 0x16, 0x00, 0x08, // attribute header
+            0x00, 0x01, // mapped address header
+            0xa1, 0x47, // XOR-ed port
+            0xe1, 0x12, 0xa6, 0x43, // XOR-ed IP address
+        ];
+
+        let Ok(Attribute::XorRelayedAddress(addr)) = parse(input, tid) else {
+            panic!("expected a XOR relayed address");
+        };
+
+        assert_eq!(addr, SocketAddr::from(([192, 0, 2, 1], 32853)));
+    }
+
+    #[test]
+    fn test_parse_requested_address_family() {
+        let input = &[0x00, 0x17, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::RequestedAddressFamily(family)) = parse(input, [0u8; 16]) else {
+            panic!("expected a requested address family");
+        };
+
+        assert_eq!(family, AddressFamily::IPv4);
+    }
+
+    #[test]
+    fn test_parse_address_family_invalid() {
+        assert!(is_invalid(parse(
+            &[0x00, 0x17, 0x00, 0x04, 0x03, 0x00, 0x00, 0x00],
+            [0u8; 16]
+        )));
+    }
+
+    #[test]
+    fn test_serialize_address_family() {
+        let mut b = BytesMut::new();
+
+        AddressFamily::IPv6.serialize(0x8000, &mut b);
+
+        assert_eq!(&b[..4], &[0x80, 0x00, 0x00, 0x04]);
+        assert_eq!(&b[4..], &[0x02, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_even_port() {
+        let input = &[0x00, 0x18, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::EvenPort(even_port)) = parse(input, [0u8; 16]) else {
+            panic!("expected an even port");
+        };
+
+        assert!(even_port.r());
+
+        let input = &[0x00, 0x18, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::EvenPort(even_port)) = parse(input, [0u8; 16]) else {
+            panic!("expected an even port");
+        };
+
+        assert!(!even_port.r());
+    }
+
+    #[test]
+    fn test_serialize_even_port() {
+        let mut b = BytesMut::new();
+
+        EvenPort::new(true).serialize(0x0018, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x18, 0x00, 0x01]);
+        assert_eq!(&b[4..], &[0x80, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_requested_transport() {
+        let input = &[0x00, 0x19, 0x00, 0x04, 0x11, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::RequestedTransport(protocol)) = parse(input, [0u8; 16]) else {
+            panic!("expected a requested transport");
+        };
+
+        assert_eq!(protocol, TransportProtocol::UDP);
+    }
+
+    #[test]
+    fn test_parse_requested_transport_invalid() {
+        assert!(is_invalid(parse(
+            &[0x00, 0x19, 0x00, 0x04, 0x06, 0x00, 0x00, 0x00],
+            [0u8; 16]
+        )));
+    }
+
+    #[test]
+    fn test_serialize_transport_protocol() {
+        let mut b = BytesMut::new();
+
+        TransportProtocol::UDP.serialize(0x0019, &mut b);
+
+        assert_eq!(&b[..4], &[0x00, 0x19, 0x00, 0x04]);
+        assert_eq!(&b[4..], &[0x11, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_dont_fragment() {
+        let input = &[0x00, 0x1a, 0x00, 0x00];
+
+        let Ok(Attribute::DontFragment) = parse(input, [0u8; 16]) else {
+            panic!("expected a don't-fragment");
+        };
+    }
+
+    #[test]
+    fn test_parse_reservation_token() {
+        let input = &[0x00, 0x22, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8];
+
+        let Ok(Attribute::ReservationToken(token)) = parse(input, [0u8; 16]) else {
+            panic!("expected a reservation token");
+        };
+
+        assert_eq!(token, 0x0102_0304_0506_0708);
+    }
+
+    #[test]
+    fn test_parse_additional_address_family() {
+        let input = &[0x80, 0x00, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::AdditionalAddressFamily(family)) = parse(input, [0u8; 16]) else {
+            panic!("expected an additional address family");
+        };
+
+        assert_eq!(family, AddressFamily::IPv6);
+    }
+
+    #[test]
+    fn test_parse_address_error_code() {
+        let mut input = vec![0x80, 0x01, 0x00, 0x08, 0x01, 0x00, 0x04, 0x28];
+
+        input.extend_from_slice(b"test");
+
+        let Ok(Attribute::AddressErrorCode(aec)) = parse(&input, [0u8; 16]) else {
+            panic!("expected an address error code");
+        };
+
+        assert_eq!(aec.family(), AddressFamily::IPv4);
+        assert_eq!(aec.code(), 440);
+        assert_eq!(aec.message(), "test");
+    }
+
+    #[test]
+    fn test_parse_address_error_code_invalid_number() {
+        assert!(is_invalid(parse(
+            &[0x80, 0x01, 0x00, 0x04, 0x01, 0x00, 0x04, 100],
+            [0u8; 16]
+        )));
+    }
+
+    #[test]
+    fn test_parse_address_error_code_invalid_family() {
+        assert!(is_invalid(parse(
+            &[0x80, 0x01, 0x00, 0x04, 0x03, 0x00, 0x04, 0x28],
+            [0u8; 16]
+        )));
+    }
+
+    #[test]
+    fn test_serialize_address_error_code() {
+        let mut b = BytesMut::new();
+
+        AddressErrorCode::new_static(AddressFamily::IPv4, 440, "test").serialize(0x8001, &mut b);
+
+        assert_eq!(&b[..4], &[0x80, 0x01, 0x00, 0x08]);
+        assert_eq!(&b[4..8], &[0x01, 0x00, 0x04, 0x28]);
+        assert_eq!(&b[8..], b"test");
+    }
+
+    #[test]
+    fn test_parse_icmp() {
+        let input = &[
+            0x80, 0x04, 0x00, 0x08, // attribute header
+            0x00, 0x00, // reserved
+            0x06, 0x04, // ICMP type (3) and code (4)
+            0xde, 0xad, 0xbe, 0xef, // error data
+        ];
+
+        let Ok(Attribute::ICMP(icmp)) = parse(input, [0u8; 16]) else {
+            panic!("expected an ICMP");
+        };
+
+        assert_eq!(icmp.icmp_type(), 3);
+        assert_eq!(icmp.icmp_code(), 4);
+        assert_eq!(icmp.error_data(), 0xdead_beef);
+    }
+
+    #[test]
+    fn test_serialize_icmp() {
+        let mut b = BytesMut::new();
+
+        ICMP::new(3, 4, 0xdead_beef).serialize(0x8004, &mut b);
+
+        assert_eq!(&b[..4], &[0x80, 0x04, 0x00, 0x08]);
+        assert_eq!(&b[4..8], &[0x00, 0x00, 0x06, 0x04]);
+        assert_eq!(&b[8..], &[0xde, 0xad, 0xbe, 0xef]);
+    }
+}

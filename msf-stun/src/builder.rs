@@ -1008,8 +1008,8 @@ mod tests {
     fn test_long_transaction_id() {
         let mut tid = [0u8; 16];
 
-        for i in 0..tid.len() {
-            tid[i] = i as u8;
+        for (i, b) in tid.iter_mut().enumerate() {
+            *b = i as u8;
         }
 
         let msg = MessageBuilder::binding_request([0u8; 12])

@@ -683,8 +683,8 @@ mod tests {
     fn test_take_message_header() {
         let mut data = vec![0u8; 24];
 
-        for i in 0..data.len() {
-            data[i] = i as u8;
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = i as u8;
         }
 
         let header = super::take_message_header(&data);

@@ -9,6 +9,8 @@ mod session;
 mod socket;
 mod utils;
 
+pub mod ice2;
+
 use std::{
     future::Future,
     net::{IpAddr, SocketAddr},

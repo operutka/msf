@@ -141,9 +141,22 @@ impl ErrorCode {
     pub const UNAUTHORIZED: Self = Self::new_static(401, "Unauthorized");
     pub const UNKNOWN_ATTRIBUTES: Self = Self::new_static(420, "Unknown Attributes");
 
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    pub const ALLOCATION_MISMATCH: Self = Self::new_static(437, "Allocation Mismatch");
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    pub const UNSUPPORTED_TRANSPORT_PROTOCOL: Self =
+        Self::new_static(442, "Unsupported Transport Protocol");
+
     #[cfg(feature = "ice")]
     #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     pub const ROLE_CONFLICT: Self = Self::new_static(487, "Role Conflict");
+
+    #[cfg(feature = "turn")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+    pub const INSUFFICIENT_CAPACITY: Self = Self::new_static(508, "Insufficient Capacity");
 
     /// Create a new error code with a given numeric code and a message.
     #[inline]

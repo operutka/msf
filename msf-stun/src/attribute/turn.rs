@@ -37,10 +37,20 @@ pub enum AddressFamily {
 
 /// Transport protocol.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum TransportProtocol {
     /// UDP transport protocol.
-    UDP = 17,
+    UDP,
+    Other(u8),
+}
+
+impl TransportProtocol {
+    /// Get the transport protocol ID.
+    pub fn id(self) -> u8 {
+        match self {
+            Self::UDP => 17,
+            Self::Other(v) => v,
+        }
+    }
 }
 
 /// Even port attribute value.
@@ -311,9 +321,9 @@ impl BytesExt for Bytes {
             .try_get_u32()
             .map_err(|_| AttributeError::InvalidAttribute)?;
 
-        match protocol >> 24 {
+        match (protocol >> 24) as u8 {
             17 => Ok(TransportProtocol::UDP),
-            _ => Err(AttributeError::InvalidAttribute),
+            id => Ok(TransportProtocol::Other(id)),
         }
     }
 
@@ -416,7 +426,7 @@ impl SerializeAttribute for TransportProtocol {
     fn serialize(&self, attribute_type: u16, buffer: &mut BytesMut) {
         buffer.reserve(8);
         buffer.put_attribute_header(attribute_type, 4);
-        buffer.put_u32((*self as u32) << 24);
+        buffer.put_u32((self.id() as u32) << 24);
     }
 }
 

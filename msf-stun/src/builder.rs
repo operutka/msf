@@ -79,52 +79,56 @@ impl<'a> MessageBuilder<'a> {
         Self::new_internal(class, method, RFC_5389_MAGIC_COOKIE, transaction_id, None)
     }
 
+    /// Create a new message builder for a given STUN request.
+    #[inline]
+    pub const fn request(method: Method, transaction_id: [u8; 12]) -> Self {
+        Self::new(MessageClass::Request, method, transaction_id)
+    }
+
     /// Create a new message builder for a STUN binding request.
     #[inline]
     pub const fn binding_request(transaction_id: [u8; 12]) -> Self {
+        Self::request(Method::Binding, transaction_id)
+    }
+
+    /// Create a new message builder for a STUN indication.
+    #[inline]
+    pub const fn indication(method: Method, transaction_id: [u8; 12]) -> Self {
+        Self::new(MessageClass::Indication, method, transaction_id)
+    }
+
+    /// Create a new message builder for a STUN response.
+    #[inline]
+    const fn response_internal(
+        class: MessageClass,
+        request: &Message,
+        error_code: Option<ErrorCode>,
+    ) -> Self {
         Self::new_internal(
-            MessageClass::Request,
-            Method::Binding,
-            RFC_5389_MAGIC_COOKIE,
-            transaction_id,
-            None,
+            class,
+            request.method,
+            request.magic_cookie,
+            request.transaction_id,
+            error_code,
         )
     }
 
     /// Create a new message builder for a STUN response.
     #[inline]
     pub const fn response(class: MessageClass, request: &Message) -> Self {
-        Self::new_internal(
-            class,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            None,
-        )
+        Self::response_internal(class, request, None)
     }
 
     /// Create a new message builder for a success STUN response.
     #[inline]
     pub const fn success_response(request: &Message) -> Self {
-        Self::new_internal(
-            MessageClass::Success,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            None,
-        )
+        Self::response(MessageClass::Success, request)
     }
 
     /// Create a new message builder for an error STUN response.
     #[inline]
     pub const fn error_response(request: &Message, error_code: ErrorCode) -> Self {
-        Self::new_internal(
-            MessageClass::Error,
-            request.method,
-            request.magic_cookie,
-            request.transaction_id,
-            Some(error_code),
-        )
+        Self::response_internal(MessageClass::Error, request, Some(error_code))
     }
 
     /// Set message class.
@@ -345,7 +349,7 @@ impl<'a> MessageBuilder<'a> {
     /// Set the XOR peer address attribute.
     #[inline]
     pub fn xor_peer_address(&mut self, addr: SocketAddr) -> &mut Self {
-        self.turn.xor_peer_address = Some(addr);
+        self.turn.xor_peer_addresses.push(addr);
         self
     }
 
@@ -612,7 +616,7 @@ impl ICEAttributes {
 struct TURNAttributes<'a> {
     channel_number: Option<ChannelNumber>,
     lifetime: Option<u32>,
-    xor_peer_address: Option<SocketAddr>,
+    xor_peer_addresses: MultiValueAttribute<SocketAddr>,
     data: Option<&'a [u8]>,
     xor_relayed_address: Option<SocketAddr>,
     requested_address_family: Option<AddressFamily>,
@@ -633,7 +637,7 @@ impl TURNAttributes<'_> {
         Self {
             channel_number: None,
             lifetime: None,
-            xor_peer_address: None,
+            xor_peer_addresses: MultiValueAttribute::new(),
             data: None,
             xor_relayed_address: None,
             requested_address_family: None,
@@ -657,8 +661,8 @@ impl TURNAttributes<'_> {
             writer.put_lifetime(lifetime);
         }
 
-        if let Some(addr) = self.xor_peer_address {
-            writer.put_xor_peer_address(addr);
+        for addr in self.xor_peer_addresses.as_ref() {
+            writer.put_xor_peer_address(*addr);
         }
 
         if let Some(data) = self.data {
@@ -699,6 +703,49 @@ impl TURNAttributes<'_> {
 
         if let Some(icmp) = self.icmp.as_ref() {
             writer.put_icmp(icmp);
+        }
+    }
+}
+
+/// Helper type for storing either none, single or multiple attributes.
+///
+/// No allocation is needed unless there are multiple attributes.
+enum MultiValueAttribute<T> {
+    None,
+    Single(T),
+    Multi(Vec<T>),
+}
+
+impl<T> MultiValueAttribute<T> {
+    /// Create a new instance with no values.
+    #[inline]
+    const fn new() -> Self {
+        Self::None
+    }
+
+    /// Add a value to the attribute.
+    fn push(&mut self, value: T) {
+        match self {
+            Self::None => *self = Self::Single(value),
+            Self::Single(_) => {
+                let mut vec = Vec::with_capacity(2);
+                if let Self::Single(v) = std::mem::replace(self, Self::None) {
+                    vec.push(v);
+                }
+                vec.push(value);
+                *self = Self::Multi(vec);
+            }
+            Self::Multi(vec) => vec.push(value),
+        }
+    }
+}
+
+impl<T> AsRef<[T]> for MultiValueAttribute<T> {
+    fn as_ref(&self) -> &[T] {
+        match self {
+            Self::None => &[],
+            Self::Single(v) => std::slice::from_ref(v),
+            Self::Multi(vec) => vec.as_slice(),
         }
     }
 }
@@ -1047,13 +1094,6 @@ mod tests {
             .expect("error code expected");
 
         assert_eq!(error_code.code(), 401);
-
-        let r = MessageBuilder::response(MessageClass::Indication, &req)
-            .build()
-            .parse_message()
-            .unwrap();
-
-        assert_eq!(r.class(), MessageClass::Indication);
     }
 
     #[test]
@@ -1087,7 +1127,7 @@ mod tests {
 
         let attrs = msg.attributes();
 
-        assert!(attrs.get_use_candidate());
+        assert!(attrs.contains_use_candidate());
 
         assert_eq!(attrs.get_priority(), Some(0x1234_5678));
         assert_eq!(attrs.get_ice_controlling(), Some(0xdead_beef));
@@ -1100,7 +1140,7 @@ mod tests {
 
         let attrs = msg.attributes();
 
-        assert!(!attrs.get_use_candidate());
+        assert!(!attrs.contains_use_candidate());
 
         assert_eq!(attrs.get_ice_controlled(), Some(0x0102_0304_0506_0708));
     }

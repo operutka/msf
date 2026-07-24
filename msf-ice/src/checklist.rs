@@ -360,8 +360,8 @@ impl Checklist {
         if let Some(local) = self.get_local_candidate(component, local_addr) {
             let local = *local;
 
-            let nominated =
-                session.get_agent_role() == AgentRole::Controlled && attributes.get_use_candidate();
+            let nominated = session.get_agent_role() == AgentRole::Controlled
+                && attributes.contains_use_candidate();
 
             let pair = CandidatePair::new(local, remote);
 

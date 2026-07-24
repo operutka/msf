@@ -2,6 +2,9 @@ use std::{net::SocketAddr, ops::Deref};
 
 use crate::attribute::{Attribute, ErrorCode, FullSha256Hash, PasswordAlgorithm};
 
+#[cfg(feature = "turn")]
+use crate::attribute::turn::{AddressFamily, EvenPort, TransportProtocol};
+
 macro_rules! find_matching_variant {
     ($needle:path, $haystack:expr) => {
         ($haystack).iter().find_map(|elem| match elem {
@@ -114,38 +117,92 @@ impl Attributes {
         find_matching_variant!(Attribute::Software, self.inner).map(|sw| &**sw)
     }
 
+    /// Check if the message integrity attribute is present.
+    #[inline]
+    pub fn contains_message_integrity(&self) -> bool {
+        self.inner
+            .iter()
+            .any(|attr| matches!(attr, Attribute::MessageIntegrity(_)))
+    }
+
+    /// Check if the message integrity SHA-256 attribute is present.
+    #[inline]
+    pub fn contains_message_integrity_sha256(&self) -> bool {
+        self.inner
+            .iter()
+            .any(|attr| matches!(attr, Attribute::MessageIntegritySha256(_)))
+    }
+}
+
+#[cfg(feature = "ice")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
+impl Attributes {
     /// Get ICE candidate priority.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_priority(&self) -> Option<u32> {
         find_matching_variant!(Attribute::Priority, self.inner).copied()
     }
 
-    /// Get the use ICE candidate attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
+    /// Check if the use ICE candidate attribute is present.
     #[inline]
-    pub fn get_use_candidate(&self) -> bool {
+    pub fn contains_use_candidate(&self) -> bool {
         self.inner
             .iter()
             .any(|attr| matches!(attr, Attribute::UseCandidate))
     }
 
     /// Get the ICE controlled attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_ice_controlled(&self) -> Option<u64> {
         find_matching_variant!(Attribute::ICEControlled, self.inner).copied()
     }
 
     /// Get the ICE controlling attribute.
-    #[cfg(feature = "ice")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "ice")))]
     #[inline]
     pub fn get_ice_controlling(&self) -> Option<u64> {
         find_matching_variant!(Attribute::ICEControlling, self.inner).copied()
+    }
+}
+
+#[cfg(feature = "turn")]
+#[cfg_attr(docsrs, doc(cfg(feature = "turn")))]
+impl Attributes {
+    /// Get the requested transport protocol.
+    #[inline]
+    pub fn get_requested_transport(&self) -> Option<TransportProtocol> {
+        find_matching_variant!(Attribute::RequestedTransport, self.inner).copied()
+    }
+
+    /// Check if the don't fragment attribute is present.
+    #[inline]
+    pub fn contains_dont_fragment(&self) -> bool {
+        self.inner
+            .iter()
+            .any(|attr| matches!(attr, Attribute::DontFragment))
+    }
+
+    /// Get the reservation token.
+    #[inline]
+    pub fn get_reservation_token(&self) -> Option<u64> {
+        find_matching_variant!(Attribute::ReservationToken, self.inner).copied()
+    }
+
+    /// Get the event port attribute.
+    #[inline]
+    pub fn get_even_port(&self) -> Option<EvenPort> {
+        find_matching_variant!(Attribute::EvenPort, self.inner).copied()
+    }
+
+    /// Get the requested address family.
+    #[inline]
+    pub fn get_requested_address_family(&self) -> Option<AddressFamily> {
+        find_matching_variant!(Attribute::RequestedAddressFamily, self.inner).copied()
+    }
+
+    /// Get the additional address family.
+    #[inline]
+    pub fn get_additional_address_family(&self) -> Option<AddressFamily> {
+        find_matching_variant!(Attribute::AdditionalAddressFamily, self.inner).copied()
     }
 }
 

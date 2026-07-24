@@ -382,7 +382,8 @@ impl Message {
     ///
     /// # Note
     /// This is not a value of the unknown attributes attribute. These are the
-    /// attributes that we actually weren't able to parse.
+    /// unkown, comprehension-required attributes that we actually weren't able
+    /// to parse.
     #[inline]
     pub fn unknown_attributes(&self) -> &[u16] {
         &self.unknown_attributes

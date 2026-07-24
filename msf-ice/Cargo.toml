@@ -15,7 +15,9 @@ keywords = ["async", "protocol", "network"]
 [dependencies]
 bytes = "1"
 futures = "0.3"
+md5 = "0.8"
 rand = "0.10"
+trait-variant = "0.1"
 
 [dependencies.log]
 version = "0.4"
@@ -23,7 +25,7 @@ optional = true
 
 [dependencies.msf-stun]
 version = "0.2"
-features = ["ice"]
+features = ["ice", "turn"]
 path = "../msf-stun"
 
 [dependencies.slog]
@@ -32,4 +34,8 @@ optional = true
 
 [dependencies.tokio]
 version = "1"
-features = ["net", "rt", "time"]
+features = ["io-util", "net", "rt", "time"]
+
+[dependencies.zerocopy]
+version = "0.8"
+features = ["derive"]

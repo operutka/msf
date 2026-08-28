@@ -215,7 +215,7 @@ impl Checklist {
     /// return the first triggered check or a check for first candidate pair in
     /// the "waiting" state  (if any).
     pub fn take_next_check(&mut self) -> Option<OutgoingConnectivityCheck> {
-        if self.state != ChecklistState::Running {
+        if self.state == ChecklistState::Success {
             None
         } else if let Some(idx) = self.next_check_index(None) {
             Some(self.start_connectivity_check(idx))
@@ -230,14 +230,15 @@ impl Checklist {
         cx: &mut Context<'_>,
         unfreeze: Option<&FoundationPair>,
     ) -> Poll<Option<OutgoingConnectivityCheck>> {
-        if self.state != ChecklistState::Running {
+        if self.state == ChecklistState::Success {
             return Poll::Ready(None);
         } else if let Some(idx) = self.next_check_index(unfreeze) {
             return Poll::Ready(Some(self.start_connectivity_check(idx)));
         }
 
-        // TODO: if all checks are done, we're a controlling agent and there
-        //   are valid pairs that should be nominated, nominate them
+        // NOTE: We cannot return `None` if the checklist state is failed
+        //   because there could still be triggered checks generated as a
+        //   result of an incoming connectivity check.
 
         let task = cx.waker();
 
@@ -249,7 +250,7 @@ impl Checklist {
     /// Get index of an entry where the next connectivity check should be
     /// initiated.
     fn next_check_index(&mut self, unfreeze: Option<&FoundationPair>) -> Option<usize> {
-        if self.state != ChecklistState::Running {
+        if self.state == ChecklistState::Success {
             return None;
         }
 
@@ -418,7 +419,20 @@ impl Checklist {
             })
             .map(|e| &e.state);
 
-        if !matches!(state, Some(CheckState::Succeeded)) {
+        if matches!(state, Some(CheckState::Succeeded)) {
+            let pair = self
+                .valid
+                .iter_mut()
+                .find(|pair| {
+                    let l = pair.local();
+                    let r = pair.remote();
+
+                    l.base() == base_addr && r.addr() == remote_addr
+                })
+                .expect("missing valid pair");
+
+            pair.nominated |= nominated;
+        } else {
             self.trigger_check(base_addr, remote_addr);
         }
     }
@@ -646,6 +660,10 @@ impl Checklist {
             .all(|component| self.has_valid_pair(component));
 
         if success {
+            // TODO: If we're a controlling agent, check that there is a
+            //   nominated pair for every used component. If so, set the state
+            //   to success. Otherwise, nominate the best valid pairs.
+
             self.state = ChecklistState::Success;
         } else {
             self.state = ChecklistState::Failed;

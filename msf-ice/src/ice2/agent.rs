@@ -464,7 +464,7 @@ impl AgentHandle {
 
         let mut context = self.context.lock();
 
-        // TODO: bind each component to the corresponding selected pair
+        // TODO: bind each component to the corresponding nominated pair
         // TODO: retain only transports with local addresses from the used bindings
 
         // deleting checklists will release all the resources they hold
@@ -876,6 +876,21 @@ impl LockedAgentContext<'_> {
         let checklist = &mut self.checklists[data_stream];
 
         checklist.process_check_request(&request);
+
+        if let Some(pair) = checklist.get_best_valid_pair(component) {
+            let remote = pair.remote();
+            let local = pair.local();
+
+            let base_addr = local.base();
+            let remote_addr = remote.addr();
+
+            self.get_data_stream(data_stream)
+                .expect("unknwon data stream")
+                .components()
+                .get(component as usize)
+                .expect("unknown component")
+                .bind(base_addr, remote_addr);
+        }
 
         Ok(())
     }

@@ -263,8 +263,12 @@ impl ConnectivityCheckResult {
 
 /// Incoming connectivity check request.
 pub struct IncomingConnectivityCheckRequest {
+    base_addr: SocketAddr,
+    remote_addr: SocketAddr,
     remote_role: AgentRole,
     remote_tie_breaker: u64,
+    data_stream: usize,
+    component: u8,
     priority: u32,
     use_candidate: bool,
 }
@@ -274,6 +278,8 @@ impl IncomingConnectivityCheckRequest {
     /// request.
     pub fn from_incoming_request(
         request: &IncomingMessage,
+        data_stream: usize,
+        component: u8,
         local_credentials: &Credentials,
     ) -> Result<Self, InvalidConnectivityCheckRequest> {
         request.authenticate(local_credentials)?;
@@ -301,13 +307,27 @@ impl IncomingConnectivityCheckRequest {
         let use_candidate = attributes.contains_use_candidate();
 
         let res = Self {
+            base_addr: request.base_addr(),
+            remote_addr: request.remote_addr(),
             remote_role,
             remote_tie_breaker,
+            data_stream,
+            component,
             priority,
             use_candidate,
         };
 
         Ok(res)
+    }
+
+    /// Get the base address.
+    pub fn base_addr(&self) -> SocketAddr {
+        self.base_addr
+    }
+
+    /// Get the remote address.
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
     }
 
     /// Get the remote agent role.
@@ -318,6 +338,16 @@ impl IncomingConnectivityCheckRequest {
     /// Get the remote tie-breaker value.
     pub fn remote_tie_breaker(&self) -> u64 {
         self.remote_tie_breaker
+    }
+
+    /// Get the data stream index.
+    pub fn data_stream(&self) -> usize {
+        self.data_stream
+    }
+
+    /// Get the component index.
+    pub fn component(&self) -> u8 {
+        self.component
     }
 
     /// Get the priority value.

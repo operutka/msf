@@ -79,6 +79,15 @@ impl AgentBuilder {
     }
 
     /// Build the agent and its event stream.
+    ///
+    /// # Arguments
+    /// * `local_ip_addresses` - local IP addresses that will be used for
+    ///   gathering local candidates; the IP addresses MUST follow the
+    ///   requirements specified in RFC 8445, section 5.1.1.1
+    /// * `stun_servers` - STUN servers that will be used for gathering
+    ///   local server-reflexive candidates
+    /// * `turn_servers` - TURN servers that will be used for gathering
+    ///   local relayed candidates
     pub fn build(
         self,
         local_ip_addresses: &[IpAddr],
@@ -332,10 +341,9 @@ impl AgentHandle {
             .iter()
             .copied()
             .filter(|ip| {
-                // TODO:
-                //   - exclude IPv4-compatible IPv6 addresses
-                //   - exclude site-local unicast IPv6 addresses
-                //   - exclude IPv4-mapped IPv6 addresses unless the agent is IPv6-only
+                // NOTE: This is just a failsafe. The user is responsible for
+                //   following all the requirements specified in RFC 8445,
+                //   section 5.1.1.1.
                 !ip.is_loopback()
             })
             .map(|ip| async move {
@@ -402,6 +410,8 @@ impl AgentHandle {
                     );
 
                     // TODO: Implement STUN keep-alive (see RFC 8445, section 5.1.1.4).
+                    //   We can create a STUNBinding object keeping a background keep-alive
+                    //   task and register the object within the outgoing packet dispatcher.
 
                     self.context.add_local_candidate(candidate);
                 }
@@ -501,6 +511,8 @@ impl AgentContext {
     }
 
     /// Add a given transport.
+    ///
+    /// This will also add the corresponding local host candidate.
     fn add_transport(&self, data_stream: usize, component: u8, transport: Transport) {
         let addr = transport.local_addr();
 
@@ -631,7 +643,7 @@ impl LockedAgentContext<'_> {
             .get_mut(candidate.data_stream())
             .expect("unknwon data stream");
 
-        let res = checklist.add_local_candidate(Some(candidate.clone()));
+        let res = checklist.add_local_candidate(candidate.clone());
 
         if res.is_ok() {
             self.context.send_event(Event::LocalCandidate(candidate));
@@ -646,7 +658,7 @@ impl LockedAgentContext<'_> {
             return;
         };
 
-        checklist.add_remote_candidate(Some(candidate));
+        checklist.add_remote_candidate(candidate);
 
         self.remove_lower_priority_pairs();
     }
@@ -654,7 +666,7 @@ impl LockedAgentContext<'_> {
     /// Indicate that there will be no more local candidates.
     fn no_more_local_candidates(&mut self) {
         for checklist in &mut self.checklists {
-            let _ = checklist.add_local_candidate(None);
+            checklist.no_more_local_candidates();
         }
 
         self.context.send_event(Event::NoMoreLocalCandidates);
@@ -663,7 +675,7 @@ impl LockedAgentContext<'_> {
     /// Indicate that there will be no more remote candidates.
     fn no_more_remote_candidates(&mut self) {
         for checklist in &mut self.checklists {
-            checklist.add_remote_candidate(None);
+            checklist.no_more_remote_candidates();
         }
     }
 
@@ -678,23 +690,31 @@ impl LockedAgentContext<'_> {
             if let Some(idx) = self.checklist_queue.pop_front() {
                 self.checklist_queue.push_back(idx);
 
-                let checklist = &self.checklists[idx];
-
-                // NOTE: We need to find a foundation that could be unforzen
-                //   if there are no other candidate pairs that could be
-                //   checked.
-                let unfreeze_foundation = checklist
-                    .frozen_pair_foundations()
-                    .find(|foundation| {
-                        self.checklists
-                            .iter()
-                            .all(|cl| !cl.is_pending_foundation(foundation))
-                    })
-                    .cloned();
-
                 let checklist = &mut self.checklists[idx];
 
-                match checklist.poll_next_check(cx, unfreeze_foundation.as_ref()) {
+                let check = if let Some(c) = checklist.take_next_check() {
+                    Poll::Ready(Some(c))
+                } else {
+                    let checklist = &self.checklists[idx];
+
+                    // NOTE: We need to find a foundation that could be unforzen
+                    //   if there are no other candidate pairs that could be
+                    //   checked.
+                    let unfreeze_foundation = checklist
+                        .frozen_pair_foundations()
+                        .find(|foundation| {
+                            self.checklists
+                                .iter()
+                                .all(|cl| !cl.is_pending_foundation(foundation))
+                        })
+                        .cloned();
+
+                    let checklist = &mut self.checklists[idx];
+
+                    checklist.poll_next_check(cx, unfreeze_foundation.as_ref())
+                };
+
+                match check {
                     Poll::Ready(Some(check)) => {
                         return Poll::Ready(Some(
                             self.create_outgoing_connectivity_check_request(check),
@@ -841,26 +861,21 @@ impl LockedAgentContext<'_> {
             .expect("unknown data stream")
             .local_credentials();
 
-        let request =
-            IncomingConnectivityCheckRequest::from_incoming_request(msg, local_credentials)?;
+        let request = IncomingConnectivityCheckRequest::from_incoming_request(
+            msg,
+            data_stream,
+            component,
+            local_credentials,
+        )?;
 
         let remote_role = request.remote_role();
         let remote_tie_breaker = request.remote_tie_breaker();
 
         self.update_agent_role(remote_role, remote_tie_breaker)?;
 
-        let learned_candidate = RemoteCandidate::peer_reflexive(
-            data_stream,
-            component,
-            msg.remote_addr(),
-            request.priority(),
-        );
+        let checklist = &mut self.checklists[data_stream];
 
-        let nominated = remote_role == AgentRole::Controlling && request.use_candidate();
-
-        // TODO: add the candidate to the DS checklist
-        // TODO: trigger checks
-        // TODO: updating the nominated flags
+        checklist.process_check_request(&request);
 
         Ok(())
     }
@@ -964,9 +979,10 @@ impl MutableAgentContext {
         Ok(())
     }
 
-    /// Remove lower priority candidate pairs from all checklists in order to
-    /// keep the total number of candidate pairs below the maximum allowed
-    /// value.
+    /// Remove lower priority candidate pairs from all checklists.
+    ///
+    /// This is done to keep the total number of candidate pairs below the
+    /// maximum allowed value (see RFC 8445, section 6.1.2.5 for more info).
     fn remove_lower_priority_pairs(&mut self) {
         let checklists = self.checklists.len();
 
@@ -991,6 +1007,8 @@ impl MutableAgentContext {
         }
 
         for checklist in &mut self.checklists {
+            checklist.clear_failed();
+
             let current = checklist.len();
             let target = current.saturating_sub(remove);
 

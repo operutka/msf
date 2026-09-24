@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (2026-MM-DD)
+## v0.2.0 (2026-09-24)
 
 * Add support for new STUN attributes defined in RFC 8489
 * Add support for TURN methods and attributes defined in RFC 8656

@@ -661,14 +661,14 @@ mod tests {
         };
 
         assert_eq!(protocol, TransportProtocol::UDP);
-    }
 
-    #[test]
-    fn test_parse_requested_transport_invalid() {
-        assert!(is_invalid(parse(
-            &[0x00, 0x19, 0x00, 0x04, 0x06, 0x00, 0x00, 0x00],
-            [0u8; 16]
-        )));
+        let input = &[0x00, 0x19, 0x00, 0x04, 0x06, 0x00, 0x00, 0x00];
+
+        let Ok(Attribute::RequestedTransport(protocol)) = parse(input, [0u8; 16]) else {
+            panic!("expected a requested transport");
+        };
+
+        assert_eq!(protocol, TransportProtocol::Other(6));
     }
 
     #[test]

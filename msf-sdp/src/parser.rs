@@ -74,6 +74,76 @@ impl<'a> SessionDescriptionLines<'a> {
     }
 }
 
+/// Lossy parser for SDP lines.
+///
+/// Lines that cannot be parsed as SDP lines will be ignored.
+pub struct SessionDescriptionLinesLossy<'a> {
+    lines: Lines<'a>,
+    current: Option<(char, &'a str)>,
+}
+
+impl<'a> SessionDescriptionLinesLossy<'a> {
+    /// Create a new parser for a given SDP.
+    pub fn new(sdp: &'a str) -> Self {
+        let mut res = Self {
+            lines: sdp.lines(),
+            current: None,
+        };
+
+        res.next();
+        res
+    }
+
+    /// Get the current SDP line.
+    pub fn current(&self) -> Option<(char, &'a str)> {
+        self.current
+    }
+
+    /// Advance the input.
+    pub fn next(&mut self) {
+        for line in &mut self.lines {
+            let line = line.trim();
+
+            if line.is_empty() {
+                continue;
+            }
+
+            let Ok(line) = parse_sdp_line(line) else {
+                continue;
+            };
+
+            self.current = Some(line);
+
+            return;
+        }
+
+        self.current = None;
+    }
+
+    /// Parse a single SDP line.
+    pub fn parse<T>(&mut self) -> Result<T, ParseError>
+    where
+        T: FromStr,
+        ParseError: From<T::Err>,
+    {
+        let (_, v) = self.current.unwrap();
+
+        let res = v.parse();
+
+        self.next();
+
+        res.map_err(ParseError::from)
+    }
+
+    /// Parse multiple SDP lines.
+    pub fn parse_multiple<T>(&mut self) -> Result<T, ParseError>
+    where
+        T: FromSessionDescriptionLinesLossy,
+    {
+        T::from_sdp_lines(self)
+    }
+}
+
 /// Parse a single SDP line/field and return the single-character field name
 /// and the field value.
 fn parse_sdp_line(line: &str) -> Result<(char, &str), ParseError> {
@@ -91,4 +161,10 @@ fn parse_sdp_line(line: &str) -> Result<(char, &str), ParseError> {
 pub trait FromSessionDescriptionLines: Sized {
     /// Parse a new object by consuming given SDP lines.
     fn from_sdp_lines(lines: &mut SessionDescriptionLines) -> Result<Self, ParseError>;
+}
+
+/// Helper trait.
+pub trait FromSessionDescriptionLinesLossy: Sized {
+    /// Parse a new object by consuming given SDP lines.
+    fn from_sdp_lines(lines: &mut SessionDescriptionLinesLossy) -> Result<Self, ParseError>;
 }

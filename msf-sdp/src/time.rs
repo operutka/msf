@@ -9,7 +9,10 @@ use std::{
 use str_reader::StringReader;
 
 use crate::{
-    parser::{FromSessionDescriptionLines, SessionDescriptionLines},
+    parser::{
+        FromSessionDescriptionLines, FromSessionDescriptionLinesLossy, SessionDescriptionLines,
+        SessionDescriptionLinesLossy,
+    },
     ParseError,
 };
 
@@ -22,6 +25,36 @@ pub struct TimeDescription {
 }
 
 impl TimeDescription {
+    /// Parse a given 't' line.
+    fn from_t_line(line: &str) -> Result<Self, ParseError> {
+        let mut reader = StringReader::new(line);
+
+        let res = Self {
+            start: reader.read_u64()?,
+            stop: reader.read_u64()?,
+            repeat_times: Vec::new(),
+        };
+
+        reader.skip_whitespace();
+
+        if reader.is_empty() {
+            Ok(res)
+        } else {
+            Err(ParseError::plain())
+        }
+    }
+
+    /// Parse a given 't' line.
+    fn from_t_line_lossy(line: &str) -> Self {
+        let mut reader = StringReader::new(line);
+
+        Self {
+            start: reader.read_word().parse().unwrap_or(0),
+            stop: reader.read_word().parse().unwrap_or(0),
+            repeat_times: Vec::new(),
+        }
+    }
+
     /// Create a new time description.
     #[inline]
     pub fn new<T>(start: u64, stop: u64, repeat_times: T) -> Self
@@ -79,19 +112,7 @@ impl FromSessionDescriptionLines for TimeDescription {
 
         debug_assert_eq!(t, 't');
 
-        let mut reader = StringReader::new(v);
-
-        let mut res = Self {
-            start: reader.read_u64()?,
-            stop: reader.read_u64()?,
-            repeat_times: Vec::new(),
-        };
-
-        reader.skip_whitespace();
-
-        if !reader.is_empty() {
-            return Err(ParseError::plain());
-        }
+        let mut res = Self::from_t_line(v)?;
 
         lines.next()?;
 
@@ -102,6 +123,31 @@ impl FromSessionDescriptionLines for TimeDescription {
                     .map_err(|err| ParseError::with_cause_and_msg("invalid repeat time", err))?;
 
                 res.repeat_times.push(repeat_time);
+            } else {
+                break;
+            }
+        }
+
+        Ok(res)
+    }
+}
+
+impl FromSessionDescriptionLinesLossy for TimeDescription {
+    fn from_sdp_lines(lines: &mut SessionDescriptionLinesLossy) -> Result<Self, ParseError> {
+        let (t, v) = lines.current().unwrap();
+
+        debug_assert_eq!(t, 't');
+
+        let mut res = Self::from_t_line_lossy(v);
+
+        // skip the current 't' line
+        lines.next();
+
+        while let Some((t, _)) = lines.current() {
+            if t == 'r' {
+                if let Ok(rt) = lines.parse() {
+                    res.repeat_times.push(rt);
+                }
             } else {
                 break;
             }
@@ -250,7 +296,7 @@ impl FromStr for TimeZoneAdjustment {
 }
 
 /// Collection of timezone adjustments.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct TimeZoneAdjustments {
     inner: Vec<TimeZoneAdjustment>,
 }

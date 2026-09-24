@@ -12,7 +12,10 @@ use crate::{
     bandwidth::Bandwidth,
     connection::ConnectionInfo,
     key::EncryptionKey,
-    parser::{FromSessionDescriptionLines, SessionDescriptionLines},
+    parser::{
+        FromSessionDescriptionLines, FromSessionDescriptionLinesLossy, SessionDescriptionLines,
+        SessionDescriptionLinesLossy,
+    },
     ParseError,
 };
 
@@ -154,6 +157,81 @@ impl MediaDescription {
         }
     }
 
+    /// Parse a given 'm' line.
+    fn from_m_line(line: &str) -> Result<Self, ParseError> {
+        let mut res = Self::new();
+
+        let mut reader = StringReader::new(line);
+
+        res.media_type = String::from(reader.read_word());
+
+        reader.skip_whitespace();
+
+        res.port = reader
+            .read_until(|c| c.is_whitespace() || c == '/')
+            .parse()?;
+
+        reader.skip_whitespace();
+
+        if reader.current_char() == Some('/') {
+            reader.skip_char();
+
+            res.port_count = Some(reader.read_u16()?);
+        }
+
+        res.protocol = String::from(reader.read_word());
+
+        loop {
+            reader.skip_whitespace();
+
+            if reader.is_empty() {
+                break;
+            }
+
+            res.formats.push(String::from(reader.read_word()));
+        }
+
+        Ok(res)
+    }
+
+    /// Parse a given 'm' line.
+    fn from_m_line_lossy(line: &str) -> Self {
+        let mut res = Self::new();
+
+        let mut reader = StringReader::new(line);
+
+        res.media_type = String::from(reader.read_word());
+
+        reader.skip_whitespace();
+
+        res.port = reader
+            .read_until(|c| c.is_whitespace() || c == '/')
+            .parse()
+            .unwrap_or(0);
+
+        reader.skip_whitespace();
+
+        if reader.current_char() == Some('/') {
+            reader.skip_char();
+
+            res.port_count = reader.read_word().parse().ok();
+        }
+
+        res.protocol = String::from(reader.read_word());
+
+        loop {
+            reader.skip_whitespace();
+
+            if reader.is_empty() {
+                break;
+            }
+
+            res.formats.push(String::from(reader.read_word()));
+        }
+
+        res
+    }
+
     /// Get a new media description builder.
     #[inline]
     pub fn builder<T, U>(media_type: T, port: u16, protocol: U) -> MediaDescriptionBuilder
@@ -162,6 +240,28 @@ impl MediaDescription {
         U: ToString,
     {
         MediaDescriptionBuilder::new(media_type.to_string(), port, protocol.to_string())
+    }
+
+    /// Parse a media description from a given string while ignoring parse
+    /// errors where possible.
+    ///
+    /// This can be used as a best effort method to parse invalid media
+    /// descriptions received from 3rd party implementations. However, keep in
+    /// mind that the returned media description may be missing vital
+    /// information. The method returns `None` if there was no `'m=...'` line
+    /// in the input.
+    pub fn from_str_lossy(s: &str) -> Option<Self> {
+        let mut lines = SessionDescriptionLinesLossy::new(s);
+
+        while let Some((t, _)) = lines.current() {
+            if t == 'm' {
+                return <Self as FromSessionDescriptionLinesLossy>::from_sdp_lines(&mut lines).ok();
+            } else {
+                lines.next();
+            }
+        }
+
+        None
     }
 
     /// Get the media type (e.g. "audio" or "video").
@@ -271,33 +371,7 @@ impl FromSessionDescriptionLines for MediaDescription {
 
         debug_assert_eq!(t, 'm');
 
-        let mut mdp = MediaDescription::new();
-
-        let mut reader = StringReader::new(v);
-
-        mdp.media_type = String::from(reader.read_word());
-
-        mdp.port = reader.read_u16()?;
-
-        reader.skip_whitespace();
-
-        if reader.current_char() == Some('/') {
-            reader.skip_char();
-
-            mdp.port_count = Some(reader.read_u16()?);
-        }
-
-        mdp.protocol = String::from(reader.read_word());
-
-        loop {
-            reader.skip_whitespace();
-
-            if reader.is_empty() {
-                break;
-            }
-
-            mdp.formats.push(String::from(reader.read_word()));
-        }
+        let mut mdp = MediaDescription::from_m_line(v)?;
 
         lines.next()?;
 
@@ -321,12 +395,56 @@ impl FromSessionDescriptionLines for MediaDescription {
     }
 }
 
+impl FromSessionDescriptionLinesLossy for MediaDescription {
+    fn from_sdp_lines(lines: &mut SessionDescriptionLinesLossy) -> Result<Self, ParseError> {
+        let (t, v) = lines.current().unwrap();
+
+        debug_assert_eq!(t, 'm');
+
+        let mut mdp = MediaDescription::from_m_line_lossy(v);
+
+        // skip the current 'm' line
+        lines.next();
+
+        while let Some((t, _)) = lines.current() {
+            match t {
+                'm' => break,
+                'i' => mdp.title = lines.parse().ok(),
+                'c' => {
+                    if let Ok(c) = lines.parse() {
+                        mdp.connection.push(c);
+                    }
+                }
+                'b' => {
+                    if let Ok(bw) = lines.parse() {
+                        mdp.bandwidth.push(bw);
+                    }
+                }
+                'k' => mdp.key = lines.parse().ok(),
+                'a' => {
+                    if let Ok(attr) = lines.parse() {
+                        mdp.attributes.push(attr);
+                    }
+                }
+                _ => lines.next(),
+            }
+        }
+
+        Ok(mdp)
+    }
+}
+
 impl FromStr for MediaDescription {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut lines = SessionDescriptionLines::new(s)?;
 
-        MediaDescription::from_sdp_lines(&mut lines)
+        lines
+            .current()
+            .filter(|(t, _)| *t == 'm')
+            .ok_or_else(ParseError::plain)?;
+
+        <Self as FromSessionDescriptionLines>::from_sdp_lines(&mut lines)
     }
 }

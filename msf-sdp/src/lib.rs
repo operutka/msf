@@ -23,7 +23,10 @@ use std::{
 
 use self::{
     attribute::Attributes,
-    parser::{FromSessionDescriptionLines, SessionDescriptionLines},
+    parser::{
+        FromSessionDescriptionLines, FromSessionDescriptionLinesLossy, SessionDescriptionLines,
+        SessionDescriptionLinesLossy,
+    },
     time::{TimeZoneAdjustment, TimeZoneAdjustments},
 };
 
@@ -358,6 +361,20 @@ impl SessionDescription {
         SessionDescriptionBuilder::new()
     }
 
+    /// Parse a session description from a given string while ignoring parse
+    /// errors where possible.
+    ///
+    /// This can be used as a best effort method to parse invalid session
+    /// descriptions received from 3rd party implementations. However, keep in
+    /// mind that the returned session description may be missing vital
+    /// information.
+    pub fn from_str_lossy(s: &str) -> Self {
+        let mut lines = SessionDescriptionLinesLossy::new(s);
+
+        <Self as FromSessionDescriptionLinesLossy>::from_sdp_lines(&mut lines)
+            .expect("unexpected parse error")
+    }
+
     /// Get version of this SDP.
     #[inline]
     pub fn version(&self) -> u16 {
@@ -525,13 +542,65 @@ impl FromSessionDescriptionLines for SessionDescription {
     }
 }
 
+impl FromSessionDescriptionLinesLossy for SessionDescription {
+    fn from_sdp_lines(lines: &mut SessionDescriptionLinesLossy) -> Result<Self, ParseError> {
+        let mut sdp = SessionDescription::empty();
+
+        while let Some((t, _)) = lines.current() {
+            match t {
+                'v' => sdp.version = lines.parse().unwrap_or(0),
+                'o' => sdp.origin = lines.parse().unwrap_or_default(),
+                's' => sdp.session_name = lines.parse().unwrap_or_default(),
+                'i' => sdp.session_information = lines.parse().ok(),
+                'u' => sdp.url = lines.parse().ok(),
+                'e' => {
+                    if let Ok(email) = lines.parse() {
+                        sdp.emails.push(email);
+                    }
+                }
+                'p' => {
+                    if let Ok(phone) = lines.parse() {
+                        sdp.phones.push(phone);
+                    }
+                }
+                'c' => sdp.connection = lines.parse().ok(),
+                'b' => {
+                    if let Ok(bw) = lines.parse() {
+                        sdp.bandwidth.push(bw);
+                    }
+                }
+                't' => {
+                    if let Ok(td) = lines.parse_multiple() {
+                        sdp.time_descriptions.push(td);
+                    }
+                }
+                'z' => sdp.tz_adjustments = lines.parse().unwrap_or_default(),
+                'k' => sdp.key = lines.parse().ok(),
+                'a' => {
+                    if let Ok(attr) = lines.parse() {
+                        sdp.attributes.push(attr);
+                    }
+                }
+                'm' => {
+                    if let Ok(md) = lines.parse_multiple() {
+                        sdp.media.push(md);
+                    }
+                }
+                _ => lines.next(),
+            }
+        }
+
+        Ok(sdp)
+    }
+}
+
 impl FromStr for SessionDescription {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut lines = SessionDescriptionLines::new(s)?;
 
-        SessionDescription::from_sdp_lines(&mut lines)
+        <Self as FromSessionDescriptionLines>::from_sdp_lines(&mut lines)
     }
 }
 

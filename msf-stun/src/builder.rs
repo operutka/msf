@@ -710,12 +710,14 @@ impl TURNAttributes<'_> {
 /// Helper type for storing either none, single or multiple attributes.
 ///
 /// No allocation is needed unless there are multiple attributes.
+#[cfg(feature = "turn")]
 enum MultiValueAttribute<T> {
     None,
     Single(T),
     Multi(Vec<T>),
 }
 
+#[cfg(feature = "turn")]
 impl<T> MultiValueAttribute<T> {
     /// Create a new instance with no values.
     #[inline]
@@ -740,6 +742,7 @@ impl<T> MultiValueAttribute<T> {
     }
 }
 
+#[cfg(feature = "turn")]
 impl<T> AsRef<[T]> for MultiValueAttribute<T> {
     fn as_ref(&self) -> &[T] {
         match self {

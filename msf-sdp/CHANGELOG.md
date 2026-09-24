@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 (2026-09-24)
+
+* Fix multiple parsing bugs
+
 ## v0.2.3 (2025-12-12)
 
 * Implement H.264 parameter parsing

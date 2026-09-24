@@ -670,3 +670,397 @@ impl FromStr for AddressType {
         Ok(res)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use crate::{
+        attribute::RTPMap,
+        connection::{ConnectionAddress, IPv4Address},
+        media::MediaDescription,
+        time::{
+            CompactDuration, RepeatTime, TimeDescription, TimeZoneAdjustment,
+            UnsignedCompactDuration,
+        },
+        AddressType, Bandwidth, BandwidthType, ConnectionInfo, EncryptionKey, NetworkType, Origin,
+        SessionDescription,
+    };
+
+    /// Session description exercising all SDP fields defined by RFC 8866.
+    ///
+    /// The fields are in the canonical order, so it can be used for
+    /// round-trip tests as well.
+    const FULL_SDP: &str = concat!(
+        "v=0\r\n",
+        "o=jdoe 2890844526 2890842807 IN IP4 10.47.16.5\r\n",
+        "s=SDP Seminar\r\n",
+        "i=A seminar on the session description protocol\r\n",
+        "u=http://www.example.com/seminars/sdp.pdf\r\n",
+        "e=j.doe@example.com (Jane Doe)\r\n",
+        "p=+1 617 555-6011\r\n",
+        "c=IN IP4 224.2.17.12/127\r\n",
+        "b=AS:128\r\n",
+        "t=2873397496 2873404696\r\n",
+        "r=7d 1h 0 25h\r\n",
+        "z=2882844526 -1h 2898848070 0\r\n",
+        "k=prompt\r\n",
+        "a=recvonly\r\n",
+        "a=tool:msf\r\n",
+        "m=audio 49170 RTP/AVP 0\r\n",
+        "i=Audio stream\r\n",
+        "b=CT:64\r\n",
+        "a=rtpmap:0 PCMU/8000\r\n",
+        "m=video 51372/2 RTP/AVP 99\r\n",
+        "c=IN IP6 ff15::101/3\r\n",
+        "k=base64:c2VjcmV0\r\n",
+        "a=rtpmap:99 H264/90000\r\n",
+    );
+
+    #[test]
+    fn test_parse_session_level_fields() {
+        let sdp = FULL_SDP.parse::<SessionDescription>().unwrap();
+
+        assert_eq!(sdp.version(), 0);
+
+        let origin = sdp.origin();
+
+        assert_eq!(origin.username(), "jdoe");
+        assert_eq!(origin.session_id(), 2890844526);
+        assert_eq!(origin.session_version(), 2890842807);
+        assert!(matches!(origin.network_type(), NetworkType::Internet));
+        assert!(matches!(origin.address_type(), AddressType::IPv4));
+        assert_eq!(origin.unicast_address(), "10.47.16.5");
+
+        assert_eq!(sdp.session_name(), "SDP Seminar");
+        assert_eq!(
+            sdp.session_information(),
+            Some("A seminar on the session description protocol")
+        );
+        assert_eq!(sdp.url(), Some("http://www.example.com/seminars/sdp.pdf"));
+        assert_eq!(sdp.emails(), ["j.doe@example.com (Jane Doe)"]);
+        assert_eq!(sdp.phones(), ["+1 617 555-6011"]);
+
+        let connection = sdp.connection().unwrap();
+
+        assert!(matches!(connection.network_type(), NetworkType::Internet));
+
+        let ConnectionAddress::IPv4(addr) = connection.address() else {
+            panic!("IPv4 connection address expected");
+        };
+
+        assert_eq!(addr.address(), Ipv4Addr::new(224, 2, 17, 12));
+        assert_eq!(addr.ttl(), Some(127));
+        assert_eq!(addr.count(), None);
+
+        assert_eq!(sdp.bandwidth().len(), 1);
+        assert!(matches!(
+            sdp.bandwidth()[0].bandwidth_type(),
+            BandwidthType::AS
+        ));
+        assert_eq!(sdp.bandwidth()[0].bandwidth(), 128);
+
+        let key = sdp.encryption_key().unwrap();
+
+        assert_eq!(key.method(), "prompt");
+        assert_eq!(key.key(), None);
+
+        let attributes = sdp.attributes();
+
+        assert!(attributes.contains("recvonly"));
+        assert_eq!(attributes.get("recvonly").unwrap().value(), None);
+        assert_eq!(attributes.get_value("tool"), Some("msf"));
+    }
+
+    #[test]
+    fn test_parse_time_fields() {
+        let sdp = FULL_SDP.parse::<SessionDescription>().unwrap();
+
+        assert_eq!(sdp.time_descriptions().len(), 1);
+
+        let td = &sdp.time_descriptions()[0];
+
+        assert_eq!(td.start(), 2873397496);
+        assert_eq!(td.stop(), 2873404696);
+        assert_eq!(td.repeat_times().len(), 1);
+
+        let repeat = &td.repeat_times()[0];
+
+        assert_eq!(repeat.repeat_interval().as_secs(), 7 * 86_400);
+        assert_eq!(repeat.active_duration().as_secs(), 3_600);
+
+        let offsets = repeat
+            .offsets()
+            .iter()
+            .map(UnsignedCompactDuration::as_secs)
+            .collect::<Vec<_>>();
+
+        assert_eq!(offsets, [0, 25 * 3_600]);
+
+        let adjustments = sdp.tz_adjustments();
+
+        assert_eq!(adjustments.len(), 2);
+        assert_eq!(adjustments[0].adjustment_time(), 2882844526);
+        assert_eq!(adjustments[0].offset().as_secs(), -3_600);
+        assert_eq!(adjustments[1].adjustment_time(), 2898848070);
+        assert_eq!(adjustments[1].offset().as_secs(), 0);
+    }
+
+    #[test]
+    fn test_parse_media_descriptions() {
+        let sdp = FULL_SDP.parse::<SessionDescription>().unwrap();
+
+        assert_eq!(sdp.media_descriptions().len(), 2);
+
+        let audio = &sdp.media_descriptions()[0];
+
+        assert_eq!(audio.media_type(), "audio");
+        assert_eq!(audio.port(), 49170);
+        assert_eq!(audio.port_count(), None);
+        assert_eq!(audio.protocol(), "RTP/AVP");
+        assert_eq!(audio.formats(), ["0"]);
+        assert_eq!(audio.title(), Some("Audio stream"));
+        assert!(audio.connection().is_empty());
+        assert_eq!(audio.bandwidth().len(), 1);
+        assert!(matches!(
+            audio.bandwidth()[0].bandwidth_type(),
+            BandwidthType::CT
+        ));
+        assert_eq!(audio.bandwidth()[0].bandwidth(), 64);
+        assert!(audio.encryption_key().is_none());
+
+        let rtpmap = audio.attributes().get_value("rtpmap").unwrap();
+        let rtpmap = RTPMap::try_from(rtpmap).unwrap();
+
+        assert_eq!(rtpmap.payload_type(), 0);
+        assert_eq!(rtpmap.encoding_name(), "PCMU");
+        assert_eq!(rtpmap.clock_rate(), 8_000);
+
+        let video = &sdp.media_descriptions()[1];
+
+        assert_eq!(video.media_type(), "video");
+        assert_eq!(video.port(), 51372);
+        assert_eq!(video.port_count(), Some(2));
+        assert_eq!(video.formats(), ["99"]);
+        assert_eq!(video.title(), None);
+        assert_eq!(video.connection().len(), 1);
+
+        let ConnectionAddress::IPv6(addr) = video.connection()[0].address() else {
+            panic!("IPv6 connection address expected");
+        };
+
+        assert_eq!(addr.address(), "ff15::101".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(addr.count(), Some(3));
+
+        let key = video.encryption_key().unwrap();
+
+        assert_eq!(key.method(), "base64");
+        assert_eq!(key.key(), Some("c2VjcmV0"));
+    }
+
+    #[test]
+    fn test_serialize_session_description() {
+        let sdp = FULL_SDP.parse::<SessionDescription>().unwrap();
+
+        assert_eq!(sdp.to_string(), FULL_SDP);
+    }
+
+    #[test]
+    fn test_parse_ignores_line_endings_and_blank_lines() {
+        let sdp = "v=0\no=- 0 0 IN IP4 127.0.0.1\n\ns=-\nt=0 0\n"
+            .parse::<SessionDescription>()
+            .unwrap();
+
+        assert_eq!(sdp.session_name(), "-");
+        assert_eq!(sdp.time_descriptions().len(), 1);
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        // a line that is not a `<type>=<value>` pair
+        assert!("v=0\r\nhello\r\n".parse::<SessionDescription>().is_err());
+
+        // an unknown field type
+        assert!("v=0\r\nq=foo\r\n".parse::<SessionDescription>().is_err());
+
+        // an invalid origin
+        assert!("o=jdoe 1 2 IN IP4\r\n"
+            .parse::<SessionDescription>()
+            .is_err());
+
+        // a trailing field in a time description
+        assert!("t=0 0 0\r\n".parse::<SessionDescription>().is_err());
+
+        // an unknown field within a media description
+        assert!("m=audio 0 RTP/AVP 0\r\nv=0\r\n"
+            .parse::<SessionDescription>()
+            .is_err());
+    }
+
+    #[test]
+    fn test_parse_lossy() {
+        let sdp = SessionDescription::from_str_lossy(concat!(
+            "v=X\r\n",
+            "o=broken origin\r\n",
+            "s=Lossy\r\n",
+            "this is not an SDP line\r\n",
+            "c=IN IP4 not-an-address\r\n",
+            "b=bogus\r\n",
+            "t=foo bar\r\n",
+            "r=also bogus\r\n",
+            "q=unknown field\r\n",
+            "a=recvonly\r\n",
+            "m=audio bogus RTP/AVP 0\r\n",
+            "a=rtpmap:0 PCMU/8000\r\n",
+        ));
+
+        // invalid values are replaced by their defaults...
+        assert_eq!(sdp.version(), 0);
+        assert_eq!(sdp.origin().username(), "-");
+        assert_eq!(sdp.origin().unicast_address(), "0.0.0.0");
+
+        // ... or dropped entirely
+        assert!(sdp.connection().is_none());
+        assert!(sdp.bandwidth().is_empty());
+
+        assert_eq!(sdp.time_descriptions().len(), 1);
+        assert_eq!(sdp.time_descriptions()[0].start(), 0);
+        assert_eq!(sdp.time_descriptions()[0].stop(), 0);
+        assert!(sdp.time_descriptions()[0].repeat_times().is_empty());
+
+        // ... while valid fields are preserved
+        assert_eq!(sdp.session_name(), "Lossy");
+        assert!(sdp.attributes().contains("recvonly"));
+
+        assert_eq!(sdp.media_descriptions().len(), 1);
+
+        let media = &sdp.media_descriptions()[0];
+
+        assert_eq!(media.media_type(), "audio");
+        assert_eq!(media.port(), 0);
+        assert_eq!(media.protocol(), "RTP/AVP");
+        assert_eq!(media.formats(), ["0"]);
+        assert_eq!(media.attributes().get_value("rtpmap"), Some("0 PCMU/8000"));
+    }
+
+    #[test]
+    fn test_builder() {
+        let origin = Origin::new(
+            "alice",
+            1,
+            2,
+            NetworkType::Internet,
+            AddressType::IPv4,
+            "192.0.2.1",
+        );
+
+        let mut media = MediaDescription::builder("audio", 49170, "RTP/AVP");
+
+        media
+            .format(0)
+            .attribute("rtpmap", RTPMap::new(0, "PCMU", 8000));
+
+        let mut builder = SessionDescription::builder();
+
+        builder
+            .version(0)
+            .origin(origin)
+            .session_information("info")
+            .url("http://example.com")
+            .email("alice@example.com")
+            .phone("+1 617 555-6011")
+            .connection(ConnectionInfo::new(
+                NetworkType::Internet,
+                ConnectionAddress::unicast(Ipv4Addr::new(192, 0, 2, 1)),
+            ))
+            .bandwidth(Bandwidth::new(BandwidthType::AS, 256))
+            .tz_adjustment(TimeZoneAdjustment::new(1, CompactDuration::Hours(-1)))
+            .encryption_key(EncryptionKey::new("prompt"))
+            .flag("recvonly")
+            .attribute("tool", "msf")
+            .media_description(media.build());
+
+        let sdp = builder.build();
+
+        // the session name and the time description are mandatory, so the
+        // builder has to fill in the defaults
+        assert_eq!(sdp.session_name(), "-");
+        assert_eq!(sdp.time_descriptions().len(), 1);
+
+        let expected = concat!(
+            "v=0\r\n",
+            "o=alice 1 2 IN IP4 192.0.2.1\r\n",
+            "s=-\r\n",
+            "i=info\r\n",
+            "u=http://example.com\r\n",
+            "e=alice@example.com\r\n",
+            "p=+1 617 555-6011\r\n",
+            "c=IN IP4 192.0.2.1\r\n",
+            "b=AS:256\r\n",
+            "t=0 0\r\n",
+            "z=1 -1h\r\n",
+            "k=prompt\r\n",
+            "a=recvonly\r\n",
+            "a=tool:msf\r\n",
+            "m=audio 49170 RTP/AVP 0\r\n",
+            "a=rtpmap:0 PCMU/8000\r\n",
+        );
+
+        assert_eq!(sdp.to_string(), expected);
+    }
+
+    #[test]
+    fn test_builder_explicit_time_description() {
+        let repeat = RepeatTime::new(
+            UnsignedCompactDuration::Days(7),
+            UnsignedCompactDuration::Hours(1),
+            vec![UnsignedCompactDuration::Seconds(0)],
+        );
+
+        let mut builder = SessionDescription::builder();
+
+        builder
+            .session_name("session")
+            .time_description(TimeDescription::new(1, 2, vec![repeat]));
+
+        let sdp = builder.build();
+
+        assert_eq!(sdp.session_name(), "session");
+        assert_eq!(sdp.time_descriptions().len(), 1);
+        assert!(sdp.to_string().contains("t=1 2\r\nr=7d 1h 0\r\n"));
+    }
+
+    #[test]
+    fn test_network_and_address_types() {
+        let sdp = "o=- 1 2 ATM NSAP 47.0001\r\n"
+            .parse::<SessionDescription>()
+            .unwrap();
+
+        let origin = sdp.origin();
+
+        assert!(matches!(origin.network_type(), NetworkType::Other(t) if t == "ATM"));
+        assert!(matches!(origin.address_type(), AddressType::Other(t) if t == "NSAP"));
+        assert_eq!(origin.to_string(), "- 1 2 ATM NSAP 47.0001");
+    }
+
+    #[test]
+    fn test_connection_address_unicast() {
+        let addr = ConnectionAddress::unicast(Ipv4Addr::new(192, 0, 2, 1));
+
+        assert!(matches!(addr, ConnectionAddress::IPv4(_)));
+        assert_eq!(addr.to_string(), "IP4 192.0.2.1");
+
+        let addr = ConnectionAddress::unicast(Ipv6Addr::LOCALHOST);
+
+        assert!(matches!(addr, ConnectionAddress::IPv6(_)));
+        assert_eq!(addr.to_string(), "IP6 ::1");
+
+        let addr = ConnectionAddress::from(IPv4Address::multicast(
+            Ipv4Addr::new(224, 2, 17, 12),
+            127,
+            Some(3),
+        ));
+
+        assert_eq!(addr.to_string(), "IP4 224.2.17.12/127/3");
+    }
+}

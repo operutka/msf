@@ -100,3 +100,38 @@ impl FromStr for Bandwidth {
         Ok(Self::new(bandwidth_type, bandwidth))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Bandwidth, BandwidthType};
+
+    #[test]
+    fn test_bandwidth() {
+        let bw = "AS:128".parse::<Bandwidth>().unwrap();
+
+        assert!(matches!(bw.bandwidth_type(), BandwidthType::AS));
+        assert_eq!(bw.bandwidth(), 128);
+        assert_eq!(bw.to_string(), "AS:128");
+
+        let bw = "CT:64".parse::<Bandwidth>().unwrap();
+
+        assert!(matches!(bw.bandwidth_type(), BandwidthType::CT));
+
+        let bw = "X-YZ:1024".parse::<Bandwidth>().unwrap();
+
+        assert!(matches!(bw.bandwidth_type(), BandwidthType::Other(t) if t == "X-YZ"));
+        assert_eq!(bw.to_string(), "X-YZ:1024");
+    }
+
+    #[test]
+    fn test_bandwidth_errors() {
+        // a missing modifier/value separator
+        assert!("AS".parse::<Bandwidth>().is_err());
+
+        // an invalid value
+        assert!("AS:bogus".parse::<Bandwidth>().is_err());
+
+        // a trailing garbage
+        assert!("AS:128 kbps".parse::<Bandwidth>().is_err());
+    }
+}

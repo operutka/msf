@@ -327,3 +327,143 @@ fn parse_parameter_sets(s: &str) -> Result<Bytes, DecodeError> {
 
     Ok(res.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::{H264Parameters, ProfileLevelId};
+
+    /// H.264 byte stream containing an SPS and a PPS NAL unit.
+    const PARAMETER_SETS: &[u8] = &[
+        0, 0, 1, 0x67, 0x42, 0xe0, 0x1e, 0xab, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
+    ];
+
+    const FMTP: &str = concat!(
+        "packetization-mode=1",
+        ";sprop-interleaving-depth=2",
+        ";sprop-max-don-diff=3",
+        ";profile-level-id=42E01E",
+        ";sprop-parameter-sets=Z0LgHqs=,aM48gA==",
+    );
+
+    #[test]
+    fn test_new() {
+        let params = H264Parameters::new(1, Some(Bytes::from_static(PARAMETER_SETS))).unwrap();
+
+        assert_eq!(params.packetization_mode(), 1);
+        assert_eq!(params.interleaving_depth(), None);
+        assert_eq!(params.max_don_diff(), None);
+        assert_eq!(params.parameter_sets().unwrap(), PARAMETER_SETS);
+
+        // the profile-level ID is extracted from the SPS
+        let profile_level_id = params.profile_level_id().unwrap();
+
+        assert_eq!(profile_level_id.profile_idc(), 0x42);
+        assert_eq!(profile_level_id.constraints(), 0xe0);
+        assert_eq!(profile_level_id.level_idc(), 0x1e);
+
+        assert_eq!(
+            params.to_string(),
+            "packetization-mode=1;profile-level-id=42E01E;sprop-parameter-sets=Z0LgHqs=,aM48gA=="
+        );
+
+        // there is no SPS to take the profile-level ID from
+        let params = H264Parameters::new(0, None).unwrap();
+
+        assert!(params.profile_level_id().is_none());
+        assert!(params.parameter_sets().is_none());
+        assert_eq!(params.to_string(), "packetization-mode=0");
+    }
+
+    #[test]
+    fn test_new_errors() {
+        // a truncated SPS
+        let sps = Bytes::from_static(&[0, 0, 1, 0x67, 0x42]);
+
+        assert!(H264Parameters::new(1, Some(sps)).is_err());
+
+        // not a byte stream at all
+        let sets = Bytes::from_static(&[0x67, 0x42, 0xe0, 0x1e]);
+
+        assert!(H264Parameters::new(1, Some(sets)).is_err());
+    }
+
+    #[test]
+    fn test_from_str() {
+        let params = FMTP.parse::<H264Parameters>().unwrap();
+
+        assert_eq!(params.packetization_mode(), 1);
+        assert_eq!(params.interleaving_depth(), Some(2));
+        assert_eq!(params.max_don_diff(), Some(3));
+        assert_eq!(params.profile_level_id().unwrap().to_string(), "42E01E");
+        assert_eq!(params.parameter_sets().unwrap(), PARAMETER_SETS);
+
+        assert_eq!(params.to_string(), FMTP);
+    }
+
+    #[test]
+    fn test_from_str_defaults() {
+        // unknown parameters are ignored and the packetization mode defaults
+        // to zero
+        let params = "profile-level-id=42E01E;foo=bar"
+            .parse::<H264Parameters>()
+            .unwrap();
+
+        assert_eq!(params.packetization_mode(), 0);
+        assert!(params.parameter_sets().is_none());
+
+        let params = H264Parameters::new(0, None)
+            .unwrap()
+            .with_interleaving_depth(5)
+            .with_max_don_diff(6);
+
+        assert_eq!(params.interleaving_depth(), Some(5));
+        assert_eq!(params.max_don_diff(), Some(6));
+        assert_eq!(
+            params.to_string(),
+            "packetization-mode=0;sprop-interleaving-depth=5;sprop-max-don-diff=6"
+        );
+    }
+
+    #[test]
+    fn test_from_str_errors() {
+        // a parameter without a value
+        assert!("packetization-mode".parse::<H264Parameters>().is_err());
+
+        assert!("packetization-mode=x".parse::<H264Parameters>().is_err());
+        assert!("sprop-interleaving-depth=x"
+            .parse::<H264Parameters>()
+            .is_err());
+        assert!("sprop-max-don-diff=x".parse::<H264Parameters>().is_err());
+        assert!("profile-level-id=42E0".parse::<H264Parameters>().is_err());
+        assert!("sprop-parameter-sets=@@@"
+            .parse::<H264Parameters>()
+            .is_err());
+    }
+
+    #[test]
+    fn test_profile_level_id() {
+        let id = "42E01E".parse::<ProfileLevelId>().unwrap();
+
+        assert_eq!(id.profile_idc(), 0x42);
+        assert_eq!(id.constraints(), 0xe0);
+        assert_eq!(id.level_idc(), 0x1e);
+        assert_eq!(id.to_string(), "42E01E");
+
+        // lower-case input is accepted as well
+        assert_eq!(
+            "42e01e".parse::<ProfileLevelId>().unwrap().to_string(),
+            "42E01E"
+        );
+
+        assert_eq!(ProfileLevelId::new(0x4d, 0x40, 0x28).to_string(), "4D4028");
+
+        // an invalid length
+        assert!("42E01".parse::<ProfileLevelId>().is_err());
+        assert!("42E01E0".parse::<ProfileLevelId>().is_err());
+
+        // not a hexadecimal number
+        assert!("42E0XX".parse::<ProfileLevelId>().is_err());
+    }
+}

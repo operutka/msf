@@ -448,3 +448,118 @@ impl FromStr for MediaDescription {
         <Self as FromSessionDescriptionLines>::from_sdp_lines(&mut lines)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use crate::{
+        connection::ConnectionAddress, Bandwidth, BandwidthType, ConnectionInfo, EncryptionKey,
+        NetworkType,
+    };
+
+    use super::MediaDescription;
+
+    const MEDIA: &str = concat!(
+        "m=video 51372/2 RTP/AVP 99 100\r\n",
+        "i=Main camera\r\n",
+        "c=IN IP4 192.0.2.1\r\n",
+        "b=AS:512\r\n",
+        "k=clear:secret\r\n",
+        "a=sendonly\r\n",
+    );
+
+    #[test]
+    fn test_from_str() {
+        // the trailing media description must not be consumed
+        let input = format!("{MEDIA}m=audio 49170 RTP/AVP 0\r\n");
+
+        let md = input.parse::<MediaDescription>().unwrap();
+
+        assert_eq!(md.media_type(), "video");
+        assert_eq!(md.port(), 51372);
+        assert_eq!(md.port_count(), Some(2));
+        assert_eq!(md.protocol(), "RTP/AVP");
+        assert_eq!(md.formats(), ["99", "100"]);
+        assert_eq!(md.title(), Some("Main camera"));
+
+        assert_eq!(md.connection().len(), 1);
+
+        let ConnectionAddress::IPv4(addr) = md.connection()[0].address() else {
+            panic!("IPv4 connection address expected");
+        };
+
+        assert_eq!(addr.address(), Ipv4Addr::new(192, 0, 2, 1));
+
+        assert_eq!(md.bandwidth().len(), 1);
+        assert_eq!(md.bandwidth()[0].bandwidth(), 512);
+
+        let key = md.encryption_key().unwrap();
+
+        assert_eq!(key.method(), "clear");
+        assert_eq!(key.key(), Some("secret"));
+
+        assert!(md.attributes().contains("sendonly"));
+
+        assert_eq!(md.to_string(), MEDIA);
+    }
+
+    #[test]
+    fn test_from_str_errors() {
+        // no media description at all
+        assert!("a=recvonly\r\n".parse::<MediaDescription>().is_err());
+        assert!("".parse::<MediaDescription>().is_err());
+
+        // an invalid port
+        assert!("m=video bogus RTP/AVP 99"
+            .parse::<MediaDescription>()
+            .is_err());
+
+        // a field that does not belong to a media description
+        assert!("m=video 0 RTP/AVP 99\r\nt=0 0\r\n"
+            .parse::<MediaDescription>()
+            .is_err());
+    }
+
+    #[test]
+    fn test_from_str_lossy() {
+        let md = MediaDescription::from_str_lossy(concat!(
+            "v=0\r\n",
+            "s=-\r\n",
+            "m=video 51372/bogus RTP/AVP 99\r\n",
+            "c=IN IP4 not-an-address\r\n",
+            "a=sendonly\r\n",
+        ))
+        .unwrap();
+
+        assert_eq!(md.media_type(), "video");
+        assert_eq!(md.port(), 51372);
+        assert_eq!(md.port_count(), None);
+        assert_eq!(md.protocol(), "RTP/AVP");
+        assert_eq!(md.formats(), ["99"]);
+        assert!(md.connection().is_empty());
+        assert!(md.attributes().contains("sendonly"));
+
+        assert!(MediaDescription::from_str_lossy("v=0\r\ns=-\r\n").is_none());
+    }
+
+    #[test]
+    fn test_builder() {
+        let mut builder = MediaDescription::builder("video", 51372, "RTP/AVP");
+
+        builder
+            .port_count(2)
+            .format(99)
+            .format(100)
+            .title("Main camera")
+            .connection(ConnectionInfo::new(
+                NetworkType::Internet,
+                ConnectionAddress::unicast(Ipv4Addr::new(192, 0, 2, 1)),
+            ))
+            .bandwidth(Bandwidth::new(BandwidthType::AS, 512))
+            .key(EncryptionKey::new_with_key("clear", "secret"))
+            .flag("sendonly");
+
+        assert_eq!(builder.build().to_string(), MEDIA);
+    }
+}

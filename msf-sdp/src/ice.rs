@@ -132,20 +132,20 @@ impl<'a> TryFrom<&'a str> for CandidateDescription<'a> {
         let mut related_addr = None;
         let mut related_port = None;
 
-        if reader.as_str().starts_with("raddr") {
-            if reader.read_word() != "raddr" {
-                return Err(ParseError::from(str_reader::ParseError::NoMatch));
-            }
+        let tmp = StringReader::new(reader.as_str());
 
+        if reader.read_word() == "raddr" {
             related_addr = Some(reader.parse_word::<IpAddr>()?);
+        } else {
+            reader = tmp;
         }
 
-        if reader.as_str().starts_with("rport") {
-            if reader.read_word() != "rport" {
-                return Err(ParseError::from(str_reader::ParseError::NoMatch));
-            }
+        let tmp = StringReader::new(reader.as_str());
 
+        if reader.read_word() == "rport" {
             related_port = Some(reader.parse_word::<u16>()?);
+        } else {
+            reader = tmp;
         }
 
         let mut related_address = None;
@@ -183,5 +183,131 @@ impl<'a> TryFrom<&'a str> for CandidateDescription<'a> {
         };
 
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use msf_ice::{CandidateKind, LocalCandidate};
+
+    use super::CandidateDescription;
+
+    #[test]
+    fn test_parse_host_candidate() {
+        let input = "1 1 UDP 2130706431 192.0.2.1 5000 typ host";
+
+        let candidate = CandidateDescription::try_from(input).unwrap();
+
+        assert_eq!(candidate.to_string(), input);
+
+        let remote = candidate.to_remote_candidate(3);
+
+        assert_eq!(remote.foundation(), "1");
+        // the component ID is zero-based in msf-ice
+        assert_eq!(remote.component(), 0);
+        assert_eq!(remote.kind(), CandidateKind::Host);
+        assert_eq!(remote.priority(), 2130706431);
+        assert_eq!(
+            remote.addr(),
+            "192.0.2.1:5000".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_parse_server_reflexive_candidate() {
+        let input = "2 2 UDP 1694498815 198.51.100.1 5001 typ srflx raddr 192.0.2.1 rport 5000";
+
+        let candidate = CandidateDescription::try_from(input).unwrap();
+
+        assert_eq!(candidate.to_string(), input);
+
+        let remote = candidate.to_remote_candidate(0);
+
+        assert_eq!(remote.component(), 1);
+        assert_eq!(remote.kind(), CandidateKind::ServerReflexive);
+    }
+
+    #[test]
+    fn test_parse_extension_attributes() {
+        // unknown extension attributes are simply skipped
+        let candidate =
+            CandidateDescription::try_from("1 1 UDP 100 192.0.2.1 5000 typ relay generation 0")
+                .unwrap();
+
+        assert_eq!(
+            candidate.to_string(),
+            "1 1 UDP 100 192.0.2.1 5000 typ relay"
+        );
+
+        // ... even if their names start with 'raddr' or 'rport'
+        let candidate =
+            CandidateDescription::try_from("1 1 UDP 100 192.0.2.1 5000 typ host raddrx 1").unwrap();
+
+        assert_eq!(candidate.to_string(), "1 1 UDP 100 192.0.2.1 5000 typ host");
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        let cases = [
+            // an empty foundation
+            "",
+            // an invalid component ID
+            "1 0 UDP 100 192.0.2.1 5000 typ host",
+            "1 257 UDP 100 192.0.2.1 5000 typ host",
+            // a missing transport
+            "1 1",
+            // an invalid priority
+            "1 1 UDP bogus 192.0.2.1 5000 typ host",
+            // an invalid address
+            "1 1 UDP 100 bogus 5000 typ host",
+            // a missing 'typ' keyword
+            "1 1 UDP 100 192.0.2.1 5000 host",
+            // an unknown candidate type
+            "1 1 UDP 100 192.0.2.1 5000 typ bogus",
+            // an invalid related address
+            "1 1 UDP 100 192.0.2.1 5000 typ srflx raddr bogus",
+            // an extension attribute without a value
+            "1 1 UDP 100 192.0.2.1 5000 typ host generation",
+        ];
+
+        for case in cases {
+            assert!(
+                CandidateDescription::try_from(case).is_err(),
+                "expected a parse error: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_local_candidate() {
+        let addr = "192.0.2.1:5000".parse::<SocketAddr>().unwrap();
+
+        let candidate = LocalCandidate::host(0, 0, addr).with_foundation(7);
+
+        let description = CandidateDescription::from_local_candidate(&candidate);
+
+        assert_eq!(
+            description.to_string(),
+            format!("7 1 UDP {} 192.0.2.1 5000 typ host", candidate.priority())
+        );
+
+        // non-host candidates report their base address as the related
+        // address
+        let base = "192.0.2.1:5000".parse::<SocketAddr>().unwrap();
+        let reflexive = "198.51.100.1:5001".parse::<SocketAddr>().unwrap();
+
+        let candidate = LocalCandidate::server_reflexive(0, 1, base, reflexive).with_foundation(8);
+
+        let description = CandidateDescription::from_local_candidate(&candidate);
+
+        assert_eq!(
+            description.to_string(),
+            format!(
+                "8 2 UDP {} 198.51.100.1 5001 typ srflx raddr 192.0.2.1 rport 5000",
+                candidate.priority()
+            )
+        );
     }
 }

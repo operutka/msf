@@ -380,9 +380,9 @@ impl CompactDuration {
     pub fn as_secs(&self) -> i64 {
         match *self {
             Self::Seconds(n) => n,
-            Self::Minutes(n) => n * 60,
-            Self::Hours(n) => n * 3_600,
-            Self::Days(n) => n * 86_400,
+            Self::Minutes(n) => n.saturating_mul(60),
+            Self::Hours(n) => n.saturating_mul(3_600),
+            Self::Days(n) => n.saturating_mul(86_400),
         }
     }
 }
@@ -417,6 +417,8 @@ impl FromStr for CompactDuration {
             _ => return Err(ParseError::plain()),
         };
 
+        reader.skip_char();
+
         if reader.is_empty() {
             Ok(res)
         } else {
@@ -440,9 +442,9 @@ impl UnsignedCompactDuration {
     pub fn as_secs(&self) -> u64 {
         match *self {
             Self::Seconds(n) => n,
-            Self::Minutes(n) => n * 60,
-            Self::Hours(n) => n * 3_600,
-            Self::Days(n) => n * 86_400,
+            Self::Minutes(n) => n.saturating_mul(60),
+            Self::Hours(n) => n.saturating_mul(3_600),
+            Self::Days(n) => n.saturating_mul(86_400),
         }
     }
 }
@@ -475,10 +477,112 @@ impl FromStr for UnsignedCompactDuration {
             _ => return Err(ParseError::plain()),
         };
 
+        reader.skip_char();
+
         if reader.is_empty() {
             Ok(res)
         } else {
             Err(ParseError::plain())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompactDuration, RepeatTime, TimeZoneAdjustments, UnsignedCompactDuration};
+
+    #[test]
+    fn test_compact_duration() {
+        let cases = [
+            ("90", 90, "90"),
+            ("90s", 90, "90"),
+            ("5m", 300, "5m"),
+            ("2h", 7_200, "2h"),
+            ("7d", 604_800, "7d"),
+            ("-1h", -3_600, "-1h"),
+        ];
+
+        for (input, secs, output) in cases {
+            let duration = input.parse::<CompactDuration>().unwrap();
+
+            assert_eq!(duration.as_secs(), secs);
+            assert_eq!(duration.to_string(), output);
+        }
+
+        // the conversion saturates instead of overflowing
+        assert_eq!(CompactDuration::Days(i64::MAX).as_secs(), i64::MAX);
+        assert_eq!(CompactDuration::Days(i64::MIN).as_secs(), i64::MIN);
+    }
+
+    #[test]
+    fn test_compact_duration_errors() {
+        assert!("".parse::<CompactDuration>().is_err());
+        assert!("h".parse::<CompactDuration>().is_err());
+
+        // an unknown unit
+        assert!("5x".parse::<CompactDuration>().is_err());
+
+        // a trailing garbage
+        assert!("5hx".parse::<CompactDuration>().is_err());
+    }
+
+    #[test]
+    fn test_unsigned_compact_duration() {
+        let duration = "7d".parse::<UnsignedCompactDuration>().unwrap();
+
+        assert_eq!(duration.as_secs(), 604_800);
+        assert_eq!(duration.to_string(), "7d");
+
+        assert_eq!(
+            "90".parse::<UnsignedCompactDuration>().unwrap().as_secs(),
+            90
+        );
+
+        // negative durations are not allowed here
+        assert!("-1h".parse::<UnsignedCompactDuration>().is_err());
+        assert!("5x".parse::<UnsignedCompactDuration>().is_err());
+
+        // the conversion saturates instead of overflowing
+        assert_eq!(UnsignedCompactDuration::Days(u64::MAX).as_secs(), u64::MAX);
+    }
+
+    #[test]
+    fn test_repeat_time() {
+        let repeat = "604800 3600 0 90000".parse::<RepeatTime>().unwrap();
+
+        assert_eq!(repeat.repeat_interval().as_secs(), 604_800);
+        assert_eq!(repeat.active_duration().as_secs(), 3_600);
+        assert_eq!(repeat.offsets().len(), 2);
+        assert_eq!(repeat.offsets()[1].as_secs(), 90_000);
+        assert_eq!(repeat.to_string(), "604800 3600 0 90000");
+
+        // the active duration is mandatory
+        assert!("7d".parse::<RepeatTime>().is_err());
+
+        // an invalid offset
+        assert!("7d 1h bogus".parse::<RepeatTime>().is_err());
+    }
+
+    #[test]
+    fn test_tz_adjustments() {
+        let adjustments = "2882844526 -1h 2898848070 0"
+            .parse::<TimeZoneAdjustments>()
+            .unwrap();
+
+        assert_eq!(adjustments.len(), 2);
+        assert_eq!(adjustments[0].adjustment_time(), 2882844526);
+        assert_eq!(adjustments[0].offset().as_secs(), -3_600);
+        assert_eq!(adjustments[1].adjustment_time(), 2898848070);
+        assert_eq!(adjustments[1].offset().as_secs(), 0);
+
+        assert_eq!(adjustments.to_string(), "2882844526 -1h 2898848070 0");
+
+        assert!(TimeZoneAdjustments::empty().to_string().is_empty());
+
+        // a missing offset
+        assert!("2882844526".parse::<TimeZoneAdjustments>().is_err());
+        assert!("2882844526 -1h 2898848070"
+            .parse::<TimeZoneAdjustments>()
+            .is_err());
     }
 }

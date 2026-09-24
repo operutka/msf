@@ -409,3 +409,115 @@ impl<'a> From<&'a str> for FormatParameters<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Attribute, Attributes, FormatParameters, RTPMap};
+
+    #[test]
+    fn test_attribute() {
+        let attr = "recvonly".parse::<Attribute>().unwrap();
+
+        assert_eq!(attr.name(), "recvonly");
+        assert_eq!(attr.value(), None);
+        assert_eq!(attr.to_string(), "recvonly");
+
+        // only the first colon separates the name from the value
+        let attr = "fingerprint:sha-256 AB:CD".parse::<Attribute>().unwrap();
+
+        assert_eq!(attr.name(), "fingerprint");
+        assert_eq!(attr.value(), Some("sha-256 AB:CD"));
+        assert_eq!(attr.to_string(), "fingerprint:sha-256 AB:CD");
+
+        // an empty value is still a value
+        let attr = "foo:".parse::<Attribute>().unwrap();
+
+        assert_eq!(attr.value(), Some(""));
+    }
+
+    #[test]
+    fn test_attributes() {
+        let mut attributes = Attributes::new();
+
+        attributes.push(Attribute::new_flag("recvonly"));
+        attributes.push(Attribute::new_attribute("rtpmap", "0 PCMU/8000"));
+        attributes.push(Attribute::new_attribute("rtpmap", "8 PCMA/8000"));
+
+        assert!(attributes.contains("recvonly"));
+        assert!(!attributes.contains("sendonly"));
+
+        // names are case sensitive
+        assert!(!attributes.contains("RecvOnly"));
+
+        assert_eq!(attributes.get_value("rtpmap"), Some("0 PCMU/8000"));
+        assert_eq!(attributes.get_value("recvonly"), None);
+        assert!(attributes.get("sendonly").is_none());
+
+        assert_eq!(attributes.get_all("rtpmap").count(), 2);
+        assert_eq!(attributes.get_all("sendonly").count(), 0);
+
+        let found = attributes
+            .find(|a| a.value().is_some_and(|v| v.contains("PCMA")))
+            .unwrap();
+
+        assert_eq!(found.value(), Some("8 PCMA/8000"));
+
+        assert_eq!(attributes.find_all(|a| a.value().is_none()).count(), 1);
+    }
+
+    #[test]
+    fn test_rtpmap() {
+        let rtpmap = RTPMap::try_from("96 opus/48000/2").unwrap();
+
+        assert_eq!(rtpmap.payload_type(), 96);
+        assert_eq!(rtpmap.encoding_name(), "opus");
+        assert_eq!(rtpmap.clock_rate(), 48_000);
+        assert_eq!(rtpmap.encoding_parameters(), Some("2"));
+        assert_eq!(rtpmap.to_string(), "96 opus/48000/2");
+
+        let rtpmap = RTPMap::try_from("0 PCMU/8000").unwrap();
+
+        assert_eq!(rtpmap.encoding_parameters(), None);
+        assert_eq!(rtpmap.to_string(), "0 PCMU/8000");
+
+        let rtpmap = RTPMap::new(96, "opus", 48_000).with_encoding_parameters(2);
+
+        assert_eq!(rtpmap.to_string(), "96 opus/48000/2");
+    }
+
+    #[test]
+    fn test_rtpmap_errors() {
+        // a missing clock rate
+        assert!(RTPMap::try_from("96 opus").is_err());
+
+        // an invalid payload type
+        assert!(RTPMap::try_from("bogus opus/48000").is_err());
+
+        // an invalid clock rate
+        assert!(RTPMap::try_from("96 opus/bogus").is_err());
+    }
+
+    #[test]
+    fn test_format_parameters() {
+        let params = FormatParameters::from("96 profile-level-id=42e01e; packetization-mode=1");
+
+        assert_eq!(params.format(), "96");
+        assert_eq!(
+            params.parameters(),
+            "profile-level-id=42e01e; packetization-mode=1"
+        );
+        assert_eq!(
+            params.to_string(),
+            "96 profile-level-id=42e01e; packetization-mode=1"
+        );
+
+        let params = FormatParameters::from("96");
+
+        assert_eq!(params.format(), "96");
+        assert_eq!(params.parameters(), "");
+
+        let params = FormatParameters::new(96, "packetization-mode=1");
+
+        assert_eq!(params.to_string(), "96 packetization-mode=1");
+    }
+}

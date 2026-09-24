@@ -140,3 +140,25 @@ impl FromStr for Origin {
         Ok(res)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Origin;
+
+    #[test]
+    fn test_default_origin() {
+        assert_eq!(Origin::default().to_string(), "- 0 0 IN IP4 0.0.0.0");
+    }
+
+    #[test]
+    fn test_origin_errors() {
+        // a missing unicast address
+        assert!("jdoe 1 2 IN IP4".parse::<Origin>().is_err());
+
+        // a trailing garbage
+        assert!("jdoe 1 2 IN IP4 10.47.16.5 x".parse::<Origin>().is_err());
+
+        // an invalid session ID
+        assert!("jdoe bogus 2 IN IP4 10.47.16.5".parse::<Origin>().is_err());
+    }
+}

@@ -209,9 +209,11 @@ impl FromStr for IPv4Address {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut reader = StringReader::new(s);
+        let mut reader = StringReader::new(s.trim());
 
-        let address = reader.parse_word()?;
+        let address = reader
+            .read_until(|c| c.is_whitespace() || c == '/')
+            .parse()?;
 
         reader.skip_whitespace();
 
@@ -219,8 +221,11 @@ impl FromStr for IPv4Address {
             None
         } else {
             reader.match_char('/')?;
+            reader.skip_whitespace();
 
-            Some(reader.read_u8()?)
+            let ttl = reader.read_until(|c| !c.is_ascii_digit()).parse()?;
+
+            Some(ttl)
         };
 
         reader.skip_whitespace();
@@ -229,11 +234,12 @@ impl FromStr for IPv4Address {
             None
         } else {
             reader.match_char('/')?;
+            reader.skip_whitespace();
 
-            Some(reader.read_u32()?)
+            let count = reader.read_until(|c| !c.is_ascii_digit()).parse()?;
+
+            Some(count)
         };
-
-        reader.skip_whitespace();
 
         if !reader.is_empty() {
             return Err(ParseError::plain());
@@ -301,9 +307,11 @@ impl FromStr for IPv6Address {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut reader = StringReader::new(s);
+        let mut reader = StringReader::new(s.trim());
 
-        let address = reader.parse_word()?;
+        let address = reader
+            .read_until(|c| c.is_whitespace() || c == '/')
+            .parse()?;
 
         reader.skip_whitespace();
 
@@ -311,11 +319,12 @@ impl FromStr for IPv6Address {
             None
         } else {
             reader.match_char('/')?;
+            reader.skip_whitespace();
 
-            Some(reader.read_u32()?)
+            let count = reader.read_until(|c| !c.is_ascii_digit()).parse()?;
+
+            Some(count)
         };
-
-        reader.skip_whitespace();
 
         if !reader.is_empty() {
             return Err(ParseError::plain());
@@ -365,5 +374,108 @@ impl Display for OtherAddress {
     #[inline]
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.write_str(&self.address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use crate::NetworkType;
+
+    use super::{ConnectionAddress, ConnectionInfo, IPv4Address, IPv6Address};
+
+    #[test]
+    fn test_ipv4_address() {
+        let addr = "192.0.2.1".parse::<IPv4Address>().unwrap();
+
+        assert_eq!(addr.address(), Ipv4Addr::new(192, 0, 2, 1));
+        assert_eq!(addr.ttl(), None);
+        assert_eq!(addr.count(), None);
+        assert_eq!(addr.to_string(), "192.0.2.1");
+
+        let addr = "224.2.17.12/127".parse::<IPv4Address>().unwrap();
+
+        assert_eq!(addr.address(), Ipv4Addr::new(224, 2, 17, 12));
+        assert_eq!(addr.ttl(), Some(127));
+        assert_eq!(addr.count(), None);
+        assert_eq!(addr.to_string(), "224.2.17.12/127");
+
+        let addr = "224.2.17.12/127/3".parse::<IPv4Address>().unwrap();
+
+        assert_eq!(addr.ttl(), Some(127));
+        assert_eq!(addr.count(), Some(3));
+        assert_eq!(addr.to_string(), "224.2.17.12/127/3");
+    }
+
+    #[test]
+    fn test_ipv4_address_errors() {
+        assert!("not-an-address".parse::<IPv4Address>().is_err());
+
+        // the TTL does not fit into a single byte
+        assert!("224.2.17.12/300".parse::<IPv4Address>().is_err());
+
+        // there is nothing after the address count
+        assert!("224.2.17.12/127/3/4".parse::<IPv4Address>().is_err());
+    }
+
+    #[test]
+    fn test_ipv6_address() {
+        let addr = "ff15::101".parse::<IPv6Address>().unwrap();
+
+        assert_eq!(
+            addr.address(),
+            Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x101)
+        );
+        assert_eq!(addr.count(), None);
+        assert_eq!(addr.to_string(), "ff15::101");
+
+        let addr = "ff15::101/3".parse::<IPv6Address>().unwrap();
+
+        assert_eq!(addr.count(), Some(3));
+        assert_eq!(addr.to_string(), "ff15::101/3");
+
+        assert!("192.0.2.1".parse::<IPv6Address>().is_err());
+        assert!("ff15::101/3/4".parse::<IPv6Address>().is_err());
+    }
+
+    #[test]
+    fn test_other_address() {
+        let info = "ATM NSAP 47.0001".parse::<ConnectionInfo>().unwrap();
+
+        assert!(matches!(info.network_type(), NetworkType::Other(t) if t == "ATM"));
+
+        let ConnectionAddress::Other(addr) = info.address() else {
+            panic!("non-IP connection address expected");
+        };
+
+        assert_eq!(addr.address_type(), "NSAP");
+        assert_eq!(addr.address(), "47.0001");
+
+        assert_eq!(info.to_string(), "ATM NSAP 47.0001");
+    }
+
+    #[test]
+    fn test_connection_info_errors() {
+        assert!("IN IP4 not-an-address".parse::<ConnectionInfo>().is_err());
+        assert!("IN IP6 192.0.2.1".parse::<ConnectionInfo>().is_err());
+    }
+
+    #[test]
+    fn test_multicast_constructors() {
+        let addr = ConnectionAddress::from(IPv4Address::multicast(
+            Ipv4Addr::new(224, 2, 17, 12),
+            127,
+            Some(3),
+        ));
+
+        assert_eq!(addr.to_string(), "IP4 224.2.17.12/127/3");
+
+        let addr = ConnectionAddress::from(IPv6Address::multicast(
+            Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x101),
+            Some(3),
+        ));
+
+        assert_eq!(addr.to_string(), "IP6 ff15::101/3");
     }
 }

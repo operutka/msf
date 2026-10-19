@@ -140,7 +140,12 @@ impl RtpTransceiverOptions {
     /// Set depth of the reordering buffer for incoming RTP packets.
     ///
     /// The default value is 64.
+    ///
+    /// # Panics
+    /// The method will panic if the given depth is zero.
     pub fn with_reordering_buffer_depth(mut self, depth: usize) -> Self {
+        assert!(depth > 0);
+
         self.inner.reordering_buffer_depth = depth;
         self
     }

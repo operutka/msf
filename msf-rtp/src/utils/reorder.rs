@@ -46,6 +46,9 @@ pub struct ReorderingBuffer {
 
 impl ReorderingBuffer {
     /// Create a new reordering buffer with a given depth.
+    ///
+    /// # Panics
+    /// The method will panic if the given depth is zero.
     #[inline]
     pub fn new(depth: usize) -> Self {
         Self {
@@ -130,7 +133,12 @@ impl ReorderingMultiBuffer {
     ///
     /// Using unlimited number of SSRCs (i.e. `max_ssrcs == None`) is not
     /// recommended as the memory usage would not be limited in this case.
+    ///
+    /// # Panics
+    /// The method will panic if the given depth is zero.
     pub fn new(depth: usize, max_ssrcs: Option<usize>) -> Self {
+        assert!(depth > 0);
+
         Self {
             input_index_to_ssrc: VecDeque::new(),
             first_input_index: 0,
@@ -311,8 +319,13 @@ struct InternalBuffer {
 
 impl InternalBuffer {
     /// Create a new reordering buffer with a given depth.
+    ///
+    /// # Panics
+    /// The method will panic if the given depth is zero.
     #[inline]
     fn new(depth: usize) -> Self {
+        assert!(depth > 0);
+
         Self {
             start: None,
             window: VecDeque::with_capacity(depth.min(8)),
@@ -388,9 +401,20 @@ impl InternalBuffer {
             return Err(InternalError::DuplicatePacket(packet));
         }
 
-        let Ok(offset) = usize::try_from(offset) else {
+        let Ok(mut offset) = usize::try_from(offset) else {
             return Err(InternalError::BufferFull(packet));
         };
+
+        // if the window is empty but the packet is still too many slots ahead,
+        // we'll skip a minimum number of slots that will allow the packet to
+        // be inserted into the buffer
+        if offset >= self.capacity && self.window.is_empty() {
+            let skip = offset - self.capacity + 1;
+
+            offset -= skip;
+
+            self.start = Some(start.wrapping_add(skip as u64));
+        }
 
         if offset < self.capacity {
             while offset >= self.window.len() {
@@ -676,11 +700,11 @@ mod tests {
             buffer.push(make_packet(11, 2)),
             Err(ReorderingError::DuplicatePacket(_))
         ));
+        assert!(matches!(buffer.push(make_packet(14, 2)), Ok(14)));
         assert!(matches!(
             buffer.push(make_packet(21, 2)),
             Err(ReorderingError::BufferFull(_))
         ));
-        assert!(matches!(buffer.push(make_packet(14, 2)), Ok(14)));
         assert!(matches!(
             buffer.push(make_packet(15, 2)),
             Err(ReorderingError::BufferFull(_))
@@ -717,5 +741,67 @@ mod tests {
         assert_eq!(buffer.next().unwrap().index(), 14);
 
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_reordering_multi_buffer_skips_empty_slots() {
+        let mut buffer = ReorderingMultiBuffer::new(8, Some(2));
+
+        assert!(matches!(buffer.push(make_packet(2, 1)), Ok(2)));
+        assert!(matches!(buffer.push(make_packet(5, 1)), Ok(5)));
+        assert!(matches!(buffer.push(make_packet(10, 2)), Ok(10)));
+        assert!(matches!(buffer.push(make_packet(13, 2)), Ok(13)));
+
+        assert_eq!(buffer.next().unwrap().index(), 2);
+        assert_eq!(buffer.next().unwrap().index(), 10);
+
+        assert!(matches!(buffer.next(), None));
+        assert!(!buffer.is_empty());
+        assert!(matches!(
+            buffer.push(make_packet(100, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
+
+        // this will remove the first empty slot from the SSRC 1 buffer
+        assert!(matches!(buffer.take(), None));
+        assert!(!buffer.is_empty());
+        assert!(matches!(
+            buffer.push(make_packet(100, 1)),
+            Err(ReorderingError::BufferFull(_))
+        ));
+
+        // this will remove the second empty slot from the SSRC 1 buffer
+        // and move the next packet (seq 5) to the output queue making the
+        // SSRC 1 buffer empty
+        assert!(matches!(buffer.take(), None));
+        assert!(!buffer.is_empty());
+        assert!(matches!(buffer.push(make_packet(100, 1)), Ok(_)));
+
+        let expected = &[
+            Some(5),
+            // these are the empty slots between 10 and 13:
+            None,
+            None,
+            Some(13),
+            // these are the empty slots in front of the 100:
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(100),
+        ];
+
+        let mut remaining = Vec::new();
+
+        while !buffer.is_empty() {
+            remaining.push(buffer.take().map(|p| p.sequence_number()));
+        }
+
+        assert_eq!(&remaining, expected);
+
+        assert!(matches!(buffer.push(make_packet(101, 1)), Ok(_)));
     }
 }

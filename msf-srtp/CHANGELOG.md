@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.1 (2026-10-19)
+
+* Fix SRTP packet index estimation and duplicate detection in the SSRC Ignore
+  mode
+
 ## v0.4.0 (2025-11-21)
 
 * Switch to msf-rtp v0.4

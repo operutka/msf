@@ -203,22 +203,25 @@ impl SrtpSession {
 
         let header = RtpHeader::decode(&mut frame)?;
 
-        let ssrc = header.ssrc();
+        let input_ssrc = header.ssrc();
 
         let input_ssrcs = self.options.input_ssrcs();
         let input_ssrc_mode = self.options.input_ssrc_mode();
 
-        // ignore packets with unexpected SSRCs (if the SSRC mode is set to
-        // `Specific`)
-        if input_ssrc_mode == SSRCMode::Specific && !input_ssrcs.contains(ssrc) {
-            return Ok(());
-        }
+        // the reordering_ssrc is the effective SSRC used for packet reordering
+        let reordering_ssrc = match input_ssrc_mode {
+            // ignore packets with unexpected SSRCs (if the SSRC mode is set to
+            // `Specific`)
+            SSRCMode::Specific if !input_ssrcs.contains(input_ssrc) => return Ok(()),
+            SSRCMode::Ignore => 0,
+            _ => input_ssrc,
+        };
 
         let index = self
             .input_rtp_buffer
-            .estimate_index(ssrc, header.sequence_number());
+            .estimate_index(reordering_ssrc, header.sequence_number());
 
-        if self.input_rtp_buffer.is_duplicate(ssrc, index) {
+        if self.input_rtp_buffer.is_duplicate(reordering_ssrc, index) {
             return Err(DecodingError::DuplicatePacket);
         }
 
@@ -232,7 +235,7 @@ impl SrtpSession {
 
         payload.resize(frame.len(), 0);
 
-        session_key.decrypt_rtp_payload(ssrc, index, &frame, &mut payload)?;
+        session_key.decrypt_rtp_payload(input_ssrc, index, &frame, &mut payload)?;
 
         let packet = RtpPacket::from_parts(header, payload.freeze())?;
 

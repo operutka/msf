@@ -1,6 +1,6 @@
 [package]
 name = "msf-rtp"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["Ondrej Perutka <perutka.ondrej@gmail.com>"]
 edition = "2021"
 readme = "README.md"

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.3 (2026-10-19)
+
+* Fix a potential infinite loop caused by ReorderingMultiBuffer
+
+## v0.4.2 (2026-06-03)
+
+* Update dependencies
+
 ## v0.4.1 (2026-02-20)
 
 * Harden RTP packet serialization and deserialization
